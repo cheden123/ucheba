@@ -46,7 +46,8 @@ def test_check_and_download_published_installer(
         assert request.url.host == "release-assets.githubusercontent.com"
         return httpx.Response(200, content=installer)
 
-    monkeypatch.setattr(updates, "_verify_signature", lambda path: None)
+    monkeypatch.setattr(updates, "_installer_version", lambda path: "1.10.2")
+    monkeypatch.setattr(updates, "_verify_signature", lambda path: False)
     transport = httpx.MockTransport(reply)
     update = updates.check_update("1.2.0", transport=transport)
     assert update is not None
@@ -55,6 +56,9 @@ def test_check_and_download_published_installer(
     path = updates.download_update(update, tmp_path, transport=transport)
     assert path.read_bytes() == installer
     assert len(accessed) == 4
+    monkeypatch.setattr(updates, "_installer_version", lambda path: "0.2.0")
+    with pytest.raises(updates.UpdateError, match="не совпадает с опубликованным"):
+        updates.download_update(update, tmp_path, transport=transport)
 
 
 def test_disallows_untrusted_asset_redirection(tmp_path: Path) -> None:

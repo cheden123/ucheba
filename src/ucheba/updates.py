@@ -236,12 +236,12 @@ def _stage_installer(
                 stream.write(chunk)
         if written != size or digest.hexdigest() != checksum:
             raise UpdateError("Размер или контрольная сумма установщика не совпадает.")
-        installed_version = expected_version
-        if installed_version is None:
-            installed_version = _installer_version(destination)
-            local = current if current is not None else version("ucheba-ai")
-            if _version_parts(installed_version) <= _version_parts(local):
-                raise UpdateError("Версия установщика должна быть новее установленной.")
+        installed_version = _installer_version(destination)
+        if expected_version is not None and installed_version != expected_version:
+            raise UpdateError("Версия установщика не совпадает с опубликованным выпуском.")
+        local = current if current is not None else version("ucheba-ai")
+        if _version_parts(installed_version) <= _version_parts(local):
+            raise UpdateError("Версия установщика должна быть новее установленной.")
         signed = _verify_signature(destination)
         return VerifiedInstaller(destination, installed_version, checksum, size, signed)
     except Exception:

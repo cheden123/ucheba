@@ -303,7 +303,7 @@ class UpdateDialog(QDialog):
             self.installer = result
             signature = "проверена" if result.signed else "отсутствует"
             self.status.setText(
-                f"Проверен установщик версии {result.version}. Подпись издателя · {signature}.\n{result.path}"
+                f"Проверен установщик версии {result.version}. Проверка Authenticode · {signature}.\n{result.path}"
             )
         else:
             self.status.setText("Установлена актуальная версия.")
@@ -386,12 +386,13 @@ class UpdateDialog(QDialog):
             self.restore_queue()
 
     def confirm_install(self, installer: updates.VerifiedInstaller) -> bool:
-        detail = "Приложение повторно проверит файл перед запуском."
+        detail = (
+            "Перед запуском приложение повторно проверит файл. SHA-256 подтверждает его "
+            "целостность. Устанавливайте обновление, только если получили его из доверенного источника."
+        )
         if not installer.signed:
             detail += (
-                "\n\nSHA-256 проверяет только целостность файла. У этого установщика отсутствует "
-                "цифровая подпись. Продолжайте, если получили комплект из доверенного источника. "
-                "Возможны предупреждения Windows SmartScreen."
+                " Установщик без цифровой подписи может вызвать предупреждение Windows SmartScreen."
             )
         confirmation = QMessageBox(
             QMessageBox.Icon.Question,
