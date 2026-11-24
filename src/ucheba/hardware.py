@@ -29,7 +29,10 @@ def missing_cuda_libraries() -> tuple[str, ...]:
         try:
             ctypes.WinDLL(library)
         except OSError:
-            missing.append(library)
+            # CTranslate2 can load a CUDA DLL from the configured PATH even
+            # when ctypes' more restrictive default loader does not see it.
+            if shutil.which(library, mode=os.F_OK) is None:
+                missing.append(library)
     return tuple(missing)
 
 
