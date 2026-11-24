@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-$compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+$compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($compiler) { return $compiler.Source }
 
 $installed = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Inno Setup 6\ISCC.exe'

@@ -8,7 +8,7 @@ $PSNativeCommandUseErrorActionPreference = $true
 
 Push-Location (Join-Path $PSScriptRoot '..')
 try {
-    $python = (Get-Command python.exe -CommandType Application).Source
+    $python = python -c "import json, sys; print(json.dumps(sys.executable))" | ConvertFrom-Json
     & $python -c "import struct, sys; assert sys.platform == 'win32' and struct.calcsize('P') == 8"
     $version = & $python -c "from importlib.metadata import version; print(version('ucheba-ai'))"
     if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
