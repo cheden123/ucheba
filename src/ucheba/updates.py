@@ -141,6 +141,9 @@ def _verify_signature(path: Path) -> None:
         return
     shell = Path(os.environ.get("SystemRoot", r"C:\Windows"))
     shell /= "System32/WindowsPowerShell/v1.0/powershell.exe"
+    environment = dict(os.environ)
+    environment.pop("PSMODULEPATH", None)
+    environment["UCHEBA_UPDATE_FILE"] = str(path)
     try:
         result = subprocess.run(
             [
@@ -150,7 +153,7 @@ def _verify_signature(path: Path) -> None:
                 "-Command",
                 "(Get-AuthenticodeSignature -LiteralPath $env:UCHEBA_UPDATE_FILE).Status",
             ],
-            env={**os.environ, "UCHEBA_UPDATE_FILE": str(path)},
+            env=environment,
             capture_output=True,
             text=True,
             timeout=45,

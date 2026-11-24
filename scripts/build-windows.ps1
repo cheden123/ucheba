@@ -8,8 +8,9 @@ $PSNativeCommandUseErrorActionPreference = $true
 
 Push-Location (Join-Path $PSScriptRoot '..')
 try {
-    python -c "import struct, sys; assert sys.platform == 'win32' and struct.calcsize('P') == 8"
-    $version = python -c "from importlib.metadata import version; print(version('ucheba-ai'))"
+    $python = (Get-Command python.exe -CommandType Application).Source
+    & $python -c "import struct, sys; assert sys.platform == 'win32' and struct.calcsize('P') == 8"
+    $version = & $python -c "from importlib.metadata import version; print(version('ucheba-ai'))"
     if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
         throw 'Версия пакета должна иметь вид MAJOR.MINOR.PATCH.'
     }
@@ -33,7 +34,19 @@ try {
     if (Test-Path -LiteralPath 'prompts' -PathType Container) {
         $arguments += @('--add-data', 'prompts:prompts')
     }
-    python -m PyInstaller @arguments 'src/ucheba/__main__.py'
+    $previousPath = $env:PATH
+    try {
+        # PyInstaller checks PATH for DLLs. Qt needs Windows' ICU, while other
+        # programs may put an incompatible ICU with the same name on PATH.
+        $env:PATH = @(
+            (Split-Path -Parent $python),
+            (Join-Path $env:SystemRoot 'System32'),
+            $env:SystemRoot
+        ) -join [IO.Path]::PathSeparator
+        & $python -m PyInstaller @arguments 'src/ucheba/__main__.py'
+    } finally {
+        $env:PATH = $previousPath
+    }
 
     $package = Join-Path $dist 'UchebaAI'
     & "$PSScriptRoot/get-ffmpeg.ps1" -Destination $package
@@ -42,11 +55,11 @@ try {
             Copy-Item -LiteralPath $name -Destination $package -Force
         }
     }
-    python 'scripts/copy-notices.py' $package
+    & $python 'scripts/copy-notices.py' $package
     & "$PSScriptRoot/test-windows-package.ps1" -ApplicationDir $package
 
     $portable = Join-Path $output.FullName 'UchebaAI-Portable-x64'
-    python -c "import shutil,sys; shutil.make_archive(sys.argv[1], 'zip', sys.argv[2])" $portable $package
+    & $python -c "import shutil,sys; shutil.make_archive(sys.argv[1], 'zip', sys.argv[2])" $portable $package
 
     if (!$Iscc) { $Iscc = & "$PSScriptRoot/get-innosetup.ps1" }
     & $Iscc "/DAppVersion=$version" "/DAppSource=$package" "/DAppOutput=$($output.FullName)" 'installer/UchebaAI.iss'
