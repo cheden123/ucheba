@@ -232,3 +232,43 @@ def test_builtin_failure_keeps_complete_transcript(tmp_path: Path, monkeypatch) 
     metadata = json.loads((result / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["speaker_warning"] == "Разделение голосов недоступно."
     assert metadata["lecturer_candidate"] is None
+
+
+def test_auto_chooses_cpu_before_loading_model_if_cuda_is_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from ucheba.models import Segment
+
+    source = tmp_path / "record.mp4"
+    source.touch()
+    queue = QueueStore(tmp_path / "profile" / "queue.db")
+    job = queue.add(source, tmp_path / "reports", model="base", device="auto", cloud=False)
+    devices = []
+
+    def transcribe(*args, device, **kwargs):
+        devices.append(device)
+        return [Segment(start=0, end=1, text="Тестовая лекция")]
+
+    monkeypatch.setattr("ucheba.pipeline.missing_cuda_libraries", lambda: ("cublas64_12.dll",))
+    monkeypatch.setattr("ucheba.transcription.transcribe", transcribe)
+    activity = []
+    process(job, None, activity.append, lambda: False)
+    assert devices == ["cpu"]
+    assert any("CUDA" in item and "CPU" in item for item in activity)
+
+
+def test_output_access_is_checked_before_recognition(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "record.mp4"
+    source.touch()
+    blocked = tmp_path / "report"
+    blocked.write_text("existing data", encoding="utf-8")
+    queue = QueueStore(tmp_path / "profile" / "queue.db")
+    job = queue.add(source, blocked, model="base", device="cpu", cloud=False)
+
+    def should_not_transcribe(*args, **kwargs):
+        pytest.fail("Нельзя запускать распознавание при недоступном выводе.")
+
+    monkeypatch.setattr("ucheba.transcription.transcribe", should_not_transcribe)
+    with pytest.raises(ValueError, match="Папка результатов недоступна для записи"):
+        process(job, None, lambda _: None, lambda: False)
+    assert blocked.read_text(encoding="utf-8") == "existing data"

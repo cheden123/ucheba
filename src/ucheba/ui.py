@@ -1117,6 +1117,7 @@ class MainWindow(QMainWindow):
         self.speakers_button = self.button(job_actions, "Говорящие…", self.review_speakers)
         self.retry_button = self.button(job_actions, "Повторить", self.retry_selected)
         self.cancel_button = self.button(job_actions, "Отменить", self.cancel_selected)
+        self.delete_button = self.button(job_actions, "Удалить из списка…", self.delete_selected)
         job_actions.addStretch()
         self.pause_button = self.button(job_actions, "Приостановить очередь", self.toggle_pause)
         layout.addLayout(job_actions)
@@ -1202,6 +1203,7 @@ class MainWindow(QMainWindow):
             )
         )
         self.cancel_button.setEnabled(bool(job and job.status in {"queued", "running"}))
+        self.delete_button.setEnabled(bool(job and self.can_delete_job(job)))
 
     def choose_files(self) -> None:
         formats = " ".join(f"*{extension}" for extension in sorted(EXTENSIONS))
@@ -1531,7 +1533,7 @@ class MainWindow(QMainWindow):
             self.watch_status.show()
             return
         self.watch_status.hide()
-        existing = {job.source for job in self.queue.list()}
+        existing = {job.source for job in self.queue.list()} | self.queue.watch_exclusions()
         now = monotonic()
         seen: dict[Path, tuple[tuple[int, int], float]] = {}
         for path, signature in scan.files.items():
@@ -1604,6 +1606,34 @@ class MainWindow(QMainWindow):
         if job := self.selected_job():
             self.queue.cancel(job.id)
             self.refresh()
+
+    def can_delete_job(self, job: Job) -> bool:
+        return job.status != "running" and (self.worker is None or self.worker.job.id != job.id)
+
+    def confirm_delete_job(self, job: Job) -> bool:
+        description = (
+            f"Убрать запись «{job.source.name}» из очереди и библиотеки?\n\n"
+            "Исходный файл и папка результатов сохранятся. Запись можно добавить снова вручную."
+        )
+        dialog = QMessageBox(QMessageBox.Icon.Question, "Удаление записи", description, parent=self)
+        dialog.setTextFormat(Qt.TextFormat.PlainText)
+        confirm = dialog.addButton("Удалить из списка", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = dialog.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+        dialog.setDefaultButton(cancel)
+        dialog.exec()
+        return dialog.clickedButton() is confirm
+
+    def delete_selected(self) -> None:
+        job = self.selected_job()
+        if job is None or not self.can_delete_job(job) or not self.confirm_delete_job(job):
+            return
+        if not self.can_delete_job(job) or not self.queue.delete(job.id):
+            self.activity.setText("Запись не удалена. Дождитесь завершения обработки.")
+            self.refresh()
+            return
+        self.observed.pop(job.source, None)
+        self.refresh()
+        self.activity.setText("Запись удалена из списка. Файлы сохранены.")
 
     def open_result(self) -> None:
         job = self.selected_job()

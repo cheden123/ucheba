@@ -8,12 +8,13 @@ import shutil
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from tempfile import TemporaryDirectory, mkdtemp
+from tempfile import TemporaryDirectory, TemporaryFile, mkdtemp
 from typing import TYPE_CHECKING
 
 from pydantic import TypeAdapter
 
 from .documents import export, export_lecturer_candidate, write_json
+from .hardware import missing_cuda_libraries
 from .imports import IMPORTS, MEDIA, VIDEO, load_transcript
 from .models import Analysis, Segment
 from .queue import Job, source_identity
@@ -106,6 +107,16 @@ def process(
     )
     partial = partial_result(job) if has_optional_steps else None
     extension = job.source.suffix.lower()
+    if extension not in IMPORTS and extension not in MEDIA:
+        raise ValueError("Формат файла не поддерживается")
+    try:
+        job.output.mkdir(parents=True, exist_ok=True)
+        with TemporaryFile(dir=job.output):
+            pass
+    except OSError as exc:
+        raise ValueError(
+            "Папка результатов недоступна для записи. Проверьте путь и права доступа."
+        ) from exc
     if partial is not None:
         progress("Чтение сохранённой расшифровки")
         transcript = partial / "transcript.json"
@@ -127,7 +138,13 @@ def process(
         cache = _cache(job)
         cache.mkdir(parents=True, exist_ok=True)
         cpu_checkpoint = cache / "transcription-cpu.json"
-        selected_device = "cpu" if job.device == "auto" and cpu_checkpoint.exists() else job.device
+        selected_device = job.device
+        if job.device == "auto":
+            if cpu_checkpoint.exists():
+                selected_device = "cpu"
+            elif missing_cuda_libraries():
+                selected_device = "cpu"
+                progress("Библиотеки CUDA недоступны. Распознавание начнётся на CPU.")
         checkpoint = (
             cpu_checkpoint
             if selected_device == "cpu" and job.device == "auto"
@@ -154,8 +171,6 @@ def process(
                 progress=progress,
                 cancelled=cancelled,
             )
-    else:
-        raise ValueError("Формат файла не поддерживается")
     if not segments:
         raise ValueError("В записи не обнаружена речь")
     if cancelled():

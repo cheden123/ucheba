@@ -391,3 +391,80 @@ def test_key_check_does_not_expose_key_and_exports_safe_log(app, tmp_path: Path,
     assert key not in exported
     assert "Журнал обработки сохранён." == window.activity.text()
     window.close()
+
+
+def test_remove_record_preserves_source_and_results(app, tmp_path: Path, monkeypatch):
+    from PySide6.QtCore import QSettings
+
+    from ucheba import ui
+
+    options = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = ui.MainWindow(tmp_path / "queue.sqlite3", options)
+    source = tmp_path / "lecture.mp4"
+    source.write_bytes(b"recording")
+    result = tmp_path / "output"
+    result.mkdir()
+    document = result / "notes.docx"
+    document.write_bytes(b"result")
+    job = window.queue.add(source, tmp_path, model="base", device="cpu", cloud=False)
+    assert window.queue.claim_next() is not None
+    window.queue.finish(job.id, "succeeded", result=result)
+    window.refresh()
+    window.table.selectRow(0)
+
+    monkeypatch.setattr(window, "confirm_delete_job", lambda _job: False)
+    window.delete_button.click()
+    assert len(window.queue.list()) == 1
+
+    monkeypatch.setattr(window, "confirm_delete_job", lambda _job: True)
+    window.delete_button.click()
+    assert window.queue.list() == []
+    assert window.table.rowCount() == 0
+    assert not window.delete_button.isEnabled()
+    assert source.read_bytes() == b"recording"
+    assert document.read_bytes() == b"result"
+    assert source in window.queue.watch_exclusions()
+    window.close()
+
+
+def test_remove_cancelled_job_waits_for_worker_exit(app, tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from PySide6.QtCore import QSettings
+
+    from ucheba import ui
+
+    options = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = ui.MainWindow(tmp_path / "queue.sqlite3", options)
+    job = window.queue.add(
+        tmp_path / "lecture.mp4", tmp_path, model="base", device="cpu", cloud=False
+    )
+    assert window.queue.claim_next() is not None
+    window.queue.cancel(job.id)
+
+    window.worker = SimpleNamespace(job=job)
+    window.refresh()
+    window.table.selectRow(0)
+    assert not window.delete_button.isEnabled()
+    confirmations = []
+    monkeypatch.setattr(
+        window, "confirm_delete_job", lambda selected: confirmations.append(selected)
+    )
+    window.delete_selected()
+    assert confirmations == []
+    assert len(window.queue.list()) == 1
+
+    window.worker = None
+    window.update_actions()
+    assert window.delete_button.isEnabled()
+
+    def starts_during_confirmation(_selected):
+        window.worker = SimpleNamespace(job=job)
+        return True
+
+    monkeypatch.setattr(window, "confirm_delete_job", starts_during_confirmation)
+    window.delete_selected()
+    assert len(window.queue.list()) == 1
+    assert not window.delete_button.isEnabled()
+    window.worker = None
+    window.close()

@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -69,6 +70,8 @@ class QueueStore:
             ):
                 if field not in columns:
                     db.execute(sql)
+
+            db.execute("CREATE TABLE IF NOT EXISTS watch_exclusions (source TEXT PRIMARY KEY)")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -146,6 +149,27 @@ class QueueStore:
     def list(self) -> list[Job]:
         with self._connect() as db:
             return [self._job(row) for row in db.execute("SELECT * FROM jobs ORDER BY rowid")]
+
+    def watch_exclusions(self) -> set[Path]:
+        with self._connect() as db:
+            return {
+                Path(row["source"]) for row in db.execute("SELECT source FROM watch_exclusions")
+            }
+
+    def delete(self, job_id: str) -> bool:
+        """Remove only the queue row and prevent an automatic re-add."""
+        with self._connect() as db:
+            row = db.execute(
+                "DELETE FROM jobs WHERE id = ? AND status <> 'running' RETURNING source",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            db.execute(
+                "INSERT OR IGNORE INTO watch_exclusions(source) VALUES (?)",
+                (os.path.normcase(os.path.abspath(row["source"])),),
+            )
+        return True
 
     def claim_next(self) -> Job | None:
         with self._connect() as db:

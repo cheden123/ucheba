@@ -20,6 +20,19 @@ class _MemoryStatus(ctypes.Structure):
     ]
 
 
+def missing_cuda_libraries() -> tuple[str, ...]:
+    """Report required CTranslate2 CUDA libraries that Windows cannot load."""
+    if os.name != "nt":
+        return ()
+    missing = []
+    for library in ("cublas64_12.dll", "cudnn64_9.dll"):
+        try:
+            ctypes.WinDLL(library)
+        except OSError:
+            missing.append(library)
+    return tuple(missing)
+
+
 def hardware_lines(directory: Path) -> list[str]:
     processor = platform.processor()
     if os.name == "nt":
