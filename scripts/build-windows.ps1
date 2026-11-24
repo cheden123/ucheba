@@ -72,6 +72,11 @@ try {
         $optionalQt = @(
             '_internal/PySide6/plugins/platforminputcontexts/qtvirtualkeyboardplugin.dll',
             '_internal/PySide6/Qt6VirtualKeyboard.dll',
+            '_internal/PySide6/Qt6Qml.dll',
+            '_internal/PySide6/Qt6QmlMeta.dll',
+            '_internal/PySide6/Qt6QmlModels.dll',
+            '_internal/PySide6/Qt6QmlWorkerScript.dll',
+            '_internal/PySide6/Qt6Quick.dll',
             '_internal/PySide6/plugins/imageformats/qpdf.dll',
             '_internal/PySide6/Qt6Pdf.dll'
         )
