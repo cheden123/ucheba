@@ -54,6 +54,7 @@ jobs:
             release/public/UchebaAI-Setup-x64.exe
             release/public/UchebaAI-Portable-x64.zip
             release/public/SHA256SUMS.txt
+            release/public/THIRD-PARTY-SOURCES.md
           if-no-files-found: error
           compression-level: 0
       - name: Подготовить описание релиза

@@ -48,4 +48,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --verify-tag --title "Учёба AI $env:GITHUB_REF_NAME" --notes-file release/notes.md release/UchebaAI-Setup-x64.exe release/UchebaAI-Portable-x64.zip release/SHA256SUMS.txt
+          gh release create $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --verify-tag --title "Учёба AI $env:GITHUB_REF_NAME" --notes-file release/notes.md release/UchebaAI-Setup-x64.exe release/UchebaAI-Portable-x64.zip release/SHA256SUMS.txt release/THIRD-PARTY-SOURCES.md

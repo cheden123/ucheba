@@ -26,6 +26,8 @@ try {
     $env:PYINSTALLER_CONFIG_DIR = Join-Path $build.FullName "pyinstaller-cache$buildSuffix"
     $dist = Join-Path $build.FullName "frozen$buildSuffix"
     $specPath = New-Item -ItemType Directory -Force -Path (Join-Path $build.FullName "spec$buildSuffix")
+    $versionFile = Join-Path $specPath.FullName 'app-version.txt'
+    Set-Content -LiteralPath $versionFile -Value $version -Encoding ascii
     & $python "scripts/get-diarization-models.py"
     $arguments = @(
         '--noconfirm', '--clean', '--onedir', '--windowed', '--name', 'UchebaAI',
@@ -35,12 +37,17 @@ try {
         '--add-data', "$($build.FullName)/diarization-models/segmentation.onnx:ucheba/models/diarization",
         '--add-data', "$($build.FullName)/diarization-models/segmentation-LICENSE.txt:ucheba/models/diarization",
         '--add-data', "$($build.FullName)/diarization-models/Источники.txt:ucheba/models/diarization",
+        '--add-data', "${versionFile}:ucheba",
         '--collect-data', 'ucheba', '--copy-metadata', 'ucheba-ai', '--copy-metadata', 'keyring',
         '--hidden-import', 'keyring.backends.Windows', '--collect-binaries', 'ctranslate2',
         '--exclude-module', 'mypy', '--exclude-module', 'pytest', '--exclude-module', 'pip',
         '--exclude-module', 'pip_audit', '--exclude-module', 'ruff'
     )
-    if (!$DownloadFFmpegOnFirstUse) {
+    if ($DownloadFFmpegOnFirstUse) {
+        $overlay = Join-Path $build.FullName 'frozen-overlay-public'
+        & $python 'scripts/prepare-public-whisper.py' $overlay
+        $arguments += @('--paths', $overlay, '--exclude-module', 'av')
+    } else {
         $arguments += @('--add-data', "$($build.FullName)/diarization-models/embedding.onnx:ucheba/models/diarization")
     }
     if (Test-Path -LiteralPath 'prompts' -PathType Container) {
@@ -62,6 +69,16 @@ try {
 
     $package = Join-Path $dist 'UchebaAI'
     if ($DownloadFFmpegOnFirstUse) {
+        $optionalQt = @(
+            '_internal/PySide6/plugins/platforminputcontexts/qtvirtualkeyboardplugin.dll',
+            '_internal/PySide6/Qt6VirtualKeyboard.dll',
+            '_internal/PySide6/plugins/imageformats/qpdf.dll',
+            '_internal/PySide6/Qt6Pdf.dll'
+        )
+        foreach ($asset in $optionalQt) {
+            $path = Join-Path $package $asset
+            if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -LiteralPath $path }
+        }
         New-Item -ItemType File -Path (Join-Path $package 'download-ffmpeg.txt') | Out-Null
         New-Item -ItemType File -Path (Join-Path $package '_internal/ucheba/models/diarization/embedding-download.txt') | Out-Null
     } else {
@@ -73,6 +90,7 @@ try {
         }
     }
     & $python 'scripts/copy-notices.py' $package
+    Copy-Item -LiteralPath 'docs/THIRD-PARTY-SOURCES.md' -Destination $output.FullName -Force
     & "$PSScriptRoot/test-windows-package.ps1" -ApplicationDir $package
 
     $portable = Join-Path $output.FullName 'UchebaAI-Portable-x64'

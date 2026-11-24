@@ -1,4 +1,4 @@
-"""Собрать лицензионные файлы установленных зависимостей приложения."""
+"""РЎРѕР±СЂР°С‚СЊ Р»РёС†РµРЅР·РёРѕРЅРЅС‹Рµ С„Р°Р№Р»С‹ СѓСЃС‚Р°РЅРѕРІР»РµРЅРЅС‹С… Р·Р°РІРёСЃРёРјРѕСЃС‚РµР№ РїСЂРёР»РѕР¶РµРЅРёСЏ."""
 
 import re
 import shutil
@@ -35,10 +35,8 @@ def copy_notices(root: Path) -> None:
 if __name__ == "__main__":
     root = Path(sys.argv[1])
     copy_notices(root)
-    (root / "licenses" / "Мультимедийные компоненты.txt").write_text(
-        "PyAV: https://github.com/PyAV-Org/PyAV\n"
-        "Рецепты сборки FFmpeg для PyAV: https://github.com/PyAV-Org/pyav-ffmpeg\n"
-        "Qt Multimedia и FFmpeg: https://doc.qt.io/qt-6.12/qtmultimedia-attribution-ffmpeg.html\n"
-        "Исходный код Qt Multimedia: https://code.qt.io/cgit/qt/qtmultimedia.git/\n",
-        encoding="utf-8",
+    source_manifest = Path(__file__).resolve().parent.parent / "docs" / "THIRD-PARTY-SOURCES.md"
+    shutil.copyfile(source_manifest, root / "licenses" / source_manifest.name)
+    shutil.copytree(
+        source_manifest.parent / "third-party-licenses", root / "licenses" / "Multimedia"
     )

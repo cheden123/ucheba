@@ -1,13 +1,14 @@
 """Локальный технический журнал без текста лекций и реквизитов доступа."""
 
 from datetime import datetime
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import PackageNotFoundError
 import platform
 from pathlib import Path
 import re
 import sqlite3
 from tempfile import NamedTemporaryFile
 
+from .app_version import current_version
 from .queue import Job, QueueStore
 
 EVENTS = {
@@ -100,7 +101,7 @@ def export_log(queue: QueueStore, destination: Path) -> None:
     if destination.suffix.lower() != ".txt":
         raise ValueError("Для экспорта журнала выберите файл с расширением .txt.")
     try:
-        app_version = version("ucheba-ai")
+        app_version = current_version()
     except PackageNotFoundError:
         app_version = "из исходников"
     with queue._connect() as db:

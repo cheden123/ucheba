@@ -6,7 +6,7 @@ import json
 import sys
 from bisect import bisect_right
 from collections.abc import Callable
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import PackageNotFoundError
 from math import isfinite
 from pathlib import Path
 from sqlite3 import Error as SQLiteError
@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .app_version import current_version
 from . import updates
 from .analysis import OpenRouterError, check_openrouter_key
 from .diagnostics import classify_failure, export_log, record_event
@@ -279,7 +280,7 @@ class UpdateDialog(QDialog):
         self.resume_queue_on_failure = False
         self.is_installed = installed_copy()
         try:
-            self.current_version: str | None = version("ucheba-ai")
+            self.current_version: str | None = current_version()
         except PackageNotFoundError:
             self.current_version = None
         self.setWindowTitle("Обновления")

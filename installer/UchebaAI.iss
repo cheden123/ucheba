@@ -1,4 +1,4 @@
-#ifndef AppVersion
+﻿#ifndef AppVersion
   #error AppVersion is required
 #endif
 #ifndef AppSource
@@ -41,6 +41,9 @@ Name: "desktopicon"; Description: "Создать ярлык на рабочем
 Source: "{#AppSource}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [InstallDelete]
+Type: filesandordirs; Name: "{app}\_internal\ucheba_ai-0.1.0.dist-info"; Check: SafeStaleMetadata('0.1.0')
+Type: filesandordirs; Name: "{app}\_internal\ucheba_ai-0.2.0.dist-info"; Check: SafeStaleMetadata('0.2.0')
+Type: filesandordirs; Name: "{app}\_internal\ucheba_ai-0.3.0.dist-info"; Check: SafeStaleMetadata('0.3.0')
 #ifdef ExternalMedia
 Type: files; Name: "{app}\ffmpeg.exe"
 Type: files; Name: "{app}\ffprobe.exe"
@@ -56,3 +59,29 @@ Name: "{autodesktop}\Учёба AI"; Filename: "{app}\UchebaAI.exe"; Tasks: desk
 
 [Run]
 Filename: "{app}\UchebaAI.exe"; Description: "Запустить Учёба AI"; Flags: nowait postinstall skipifsilent
+
+[Code]
+function GetFileAttributes(FileName: string): LongWord;
+external 'GetFileAttributesW@kernel32.dll stdcall';
+
+function SafeStaleMetadata(Version: string): Boolean;
+var
+  Root, Current, Parent: string;
+  Attributes: LongWord;
+begin
+  Result := False;
+  Root := AddBackslash(ExpandFileName(ExpandConstant('{app}')));
+  Current := ExpandFileName(Root + '_internal\ucheba_ai-' + Version + '.dist-info');
+  if CompareText(Copy(Current, 1, Length(Root)), Root) <> 0 then
+    Exit;
+  repeat
+    Attributes := GetFileAttributes(Current);
+    if (Attributes = $FFFFFFFF) or ((Attributes and $400) <> 0) then
+      Exit;
+    Parent := ExtractFileDir(Current);
+    if (Length(Parent) = 0) or (Parent = Current) then
+      Break;
+    Current := Parent;
+  until False;
+  Result := True;
+end;

@@ -63,9 +63,13 @@ try {
     }
     Invoke-CheckedProcess -FilePath (Join-Path $ApplicationDir 'UchebaAI.exe') -Arguments '--smoke-test' -Log $smokeLog.FullName
     if (Test-Path -LiteralPath (Join-Path $ApplicationDir 'download-ffmpeg.txt')) {
-        foreach ($tool in @('ffmpeg.exe', 'ffprobe.exe')) {
+        foreach ($tool in @(
+            'ffmpeg.exe', 'ffprobe.exe', '_internal/av.libs',
+            '_internal/PySide6/Qt6VirtualKeyboard.dll',
+            '_internal/PySide6/Qt6Pdf.dll'
+        )) {
             if (Test-Path -LiteralPath (Join-Path $ApplicationDir $tool)) {
-                throw "Публикуемый пакет содержит $tool вместо загрузки от поставщика."
+                throw "В публикуемом пакете обнаружен исключённый компонент: $tool"
             }
         }
     } else {

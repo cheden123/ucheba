@@ -11,12 +11,15 @@ def _smoke_test() -> int:
     from faster_whisper import WhisperModel  # noqa: F401
 
     from ucheba import builtin_diarization
+    from ucheba.app_version import current_version
     from ucheba.documents import export
     from ucheba.models import Analysis, Segment
     from ucheba.ui import main as run_ui
 
     if getattr(sys, "frozen", False):
         import sherpa_onnx  # noqa: F401
+
+        current_version()
 
     with TemporaryDirectory() as directory:
         if getattr(sys, "frozen", False):

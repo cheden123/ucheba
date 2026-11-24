@@ -8,19 +8,19 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from importlib.metadata import version
 from pathlib import Path
 from tempfile import mkdtemp
 from typing import Iterable
 
 import httpx
 
+from .app_version import VERSION_PATTERN, current_version
+
 _REPOSITORY = "cheden123/ucheba"
 _LATEST = f"https://api.github.com/repos/{_REPOSITORY}/releases/latest"
 _DOWNLOAD = f"https://github.com/{_REPOSITORY}/releases/download"
 _SETUP = "UchebaAI-Setup-x64.exe"
 _CHECKSUM = "SHA256SUMS.txt"
-_VERSION = r"(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})"
 _ASSET_HOSTS = {
     "github.com",
     "release-assets.githubusercontent.com",
@@ -56,7 +56,7 @@ class VerifiedInstaller:
 
 
 def _version_parts(value: str) -> tuple[int, int, int]:
-    match = re.fullmatch(_VERSION, value)
+    match = re.fullmatch(VERSION_PATTERN, value)
     if match is None:
         raise UpdateError("Обнаружен выпуск с неподдерживаемым форматом версии.")
     return int(match[1]), int(match[2]), int(match[3])
@@ -78,7 +78,7 @@ def check_update(
     require_public: bool = False,
 ) -> Update | None:
     """Получить сведения о новом стабильном выпуске."""
-    local = _version_parts(current if current is not None else version("ucheba-ai"))
+    local = _version_parts(current if current is not None else current_version())
     try:
         with _client(transport) as client:
             response = client.get(_LATEST, headers={"Accept": "application/vnd.github+json"})
@@ -239,7 +239,7 @@ def _stage_installer(
         installed_version = _installer_version(destination)
         if expected_version is not None and installed_version != expected_version:
             raise UpdateError("Версия установщика не совпадает с опубликованным выпуском.")
-        local = current if current is not None else version("ucheba-ai")
+        local = current if current is not None else current_version()
         if _version_parts(installed_version) <= _version_parts(local):
             raise UpdateError("Версия установщика должна быть новее установленной.")
         signed = _verify_signature(destination)
