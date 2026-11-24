@@ -177,3 +177,20 @@ def export_slides(
         )
     document.save(str(folder / "04_Слайды_лекции.docx"))
     write_json(folder / "slides.json", index)
+
+
+def export_lecturer_candidate(
+    folder: Path, segments: list[Segment], candidate: str, *, template: str
+) -> None:
+    document = formatted_document(template)
+    document.add_heading("Предполагаемая речь преподавателя", 0)
+    document.add_paragraph(
+        f"Вероятный преподаватель — {safe_text(candidate)}. Проверьте роль в окне «Говорящие»."
+    )
+    for segment in segments:
+        if segment.speaker == candidate:
+            add_math_text(
+                document.add_paragraph(),
+                safe_text(f"[{timestamp(segment.start)}] {segment.text}"),
+            )
+    document.save(str(folder / "05_Вероятная_речь_преподавателя.docx"))

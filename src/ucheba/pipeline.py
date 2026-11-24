@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import TypeAdapter
 
-from .documents import export, write_json
+from .documents import export, export_lecturer_candidate, write_json
 from .imports import IMPORTS, MEDIA, VIDEO, load_transcript
 from .models import Analysis, Segment
 from .queue import Job, source_identity
@@ -51,11 +51,14 @@ def _publish(
     cancelled: Callable[[], bool],
     slides: list[Slide] | None = None,
     candidate: str | None = None,
+    speaker_warning: str | None = None,
 ) -> None:
     folder.parent.mkdir(parents=True, exist_ok=True)
     temp = Path(mkdtemp(prefix=f".ucheba-{job.id}-", dir=folder.parent))
     try:
         export(temp, job.source.stem, segments, analysis, template=job.template)
+        if candidate:
+            export_lecturer_candidate(temp, segments, candidate, template=job.template)
         if slides:
             from .documents import export_slides
 
@@ -69,6 +72,7 @@ def _publish(
                 "job_id": job.id,
                 "cloud": analysis is not None,
                 "lecturer_candidate": candidate,
+                "speaker_warning": speaker_warning,
                 "transcript_sha256": transcript_sha256,
                 "created": datetime.now().astimezone().isoformat(),
             },
@@ -97,7 +101,9 @@ def process(
     _check_source_consent(job)
     if cancelled():
         raise InterruptedError("Обработка отменена")
-    has_optional_steps = job.cloud or job.speaker_model is not None or job.slides
+    has_optional_steps = (
+        job.cloud or job.speaker_model is not None or job.auto_speakers or job.slides
+    )
     partial = partial_result(job) if has_optional_steps else None
     extension = job.source.suffix.lower()
     if partial is not None:
@@ -155,21 +161,37 @@ def process(
     if cancelled():
         raise InterruptedError("Обработка отменена")
     candidate = None
-    if job.speaker_model is not None and extension in MEDIA:
+    speaker_warning = None
+    if (job.speaker_model is not None or job.auto_speakers) and extension in MEDIA:
         from .diarization import diarize, suggest_lecturer
 
         if partial is None or not any(segment.speaker for segment in segments):
             try:
-                speakers = diarize(
-                    job.source, segments, job.speaker_model, progress=progress, cancelled=cancelled
-                )
+                if job.speaker_model is not None:
+                    speakers = diarize(
+                        job.source,
+                        segments,
+                        job.speaker_model,
+                        progress=progress,
+                        cancelled=cancelled,
+                    )
+                else:
+                    from .builtin_diarization import diarize_builtin
+
+                    speakers = diarize_builtin(
+                        job.source, segments, progress=progress, cancelled=cancelled
+                    )
             except InterruptedError:
                 raise
             except (RuntimeError, OSError, ValueError) as exc:
-                if partial is None:
-                    _publish(_cache(job) / "Расшифровка", job, segments, None, cancelled)
-                raise ValueError(str(exc)) from exc
-            segments, candidate = list(speakers.segments), speakers.candidate
+                if job.speaker_model is not None:
+                    if partial is None:
+                        _publish(_cache(job) / "Расшифровка", job, segments, None, cancelled)
+                    raise ValueError(str(exc)) from exc
+                speaker_warning = str(exc) or "Не удалось автоматически разделить говорящих."
+                progress(speaker_warning)
+            else:
+                segments, candidate = list(speakers.segments), speakers.candidate
         else:
             candidate = suggest_lecturer(segments)
 
@@ -214,5 +236,5 @@ def process(
                 slides=[(slide.start, slide.text) for slide in slides if slide.text.strip()],
             )
         progress("Создание документов Word")
-        _publish(folder, job, segments, analysis, cancelled, slides, candidate)
+        _publish(folder, job, segments, analysis, cancelled, slides, candidate, speaker_warning)
     return folder

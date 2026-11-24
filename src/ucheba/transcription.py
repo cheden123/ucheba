@@ -37,6 +37,13 @@ def _continue(cancelled: Callable[[], bool]) -> None:
 
 def _tool(name: str) -> str:
     bundled = Path(sys.executable).parent / f"{name}.exe"
+    if getattr(sys, "frozen", False) and (bundled.parent / "download-ffmpeg.txt").is_file():
+        from .ffmpeg_download import FFmpegDownloadError, vendor_tool
+
+        try:
+            return vendor_tool(name)
+        except FFmpegDownloadError as exc:
+            raise TranscriptionError(str(exc)) from exc
     if getattr(sys, "frozen", False) and bundled.is_file():
         return str(bundled)
     result = shutil.which(name)

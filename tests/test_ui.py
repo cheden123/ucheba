@@ -144,6 +144,7 @@ def test_slide_selection_reconfirms_cloud_consent(app, tmp_path: Path):
     assert "текст с кадров" in observed["label"]
     (job,) = window.queue.list()
     assert job.slides and not job.cloud
+    assert job.auto_speakers
     assert job.template == "compact"
     assert window.document_template() == "compact"
     window.close()
@@ -294,4 +295,99 @@ def test_update_dialog_rechecks_local_installer_after_confirmation(
     assert "Контрольная сумма" in dialog.status.text()
     assert not window.paused
     dialog.reject()
+    window.close()
+
+
+def test_installed_github_update_uses_one_action_before_confirmation(
+    app, tmp_path: Path, monkeypatch
+):
+    from PySide6.QtCore import QSettings
+
+    from ucheba import ui, updates
+
+    release = updates.Update(
+        "9.0.0", "Изменения", "https://github.com/cheden123/ucheba/releases/tag/v9.0.0", 100
+    )
+    prepared = updates.VerifiedInstaller(
+        tmp_path / "UchebaAI-Setup-x64.exe", "9.0.0", "a" * 64, 100, False
+    )
+    monkeypatch.setattr(ui, "installed_copy", lambda: True)
+    monkeypatch.setattr(ui.UpdateDialog, "private_update_dir", staticmethod(lambda: tmp_path))
+    events = []
+
+    def check(_current, *, require_public):
+        events.append(("check", require_public))
+        return release
+
+    def stage(info, directory):
+        events.append(("stage", info, directory))
+        return prepared
+
+    def recheck(installer):
+        events.append(("recheck", installer))
+        return installer.path
+
+    monkeypatch.setattr(updates, "check_update", check)
+    monkeypatch.setattr(updates, "stage_online_update", stage)
+    monkeypatch.setattr(updates, "verify_installer_for_launch", recheck)
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = ui.MainWindow(tmp_path / "queue.sqlite3", settings)
+    dialog = ui.UpdateDialog(window)
+
+    def confirm(installer):
+        events.append(("confirm", installer))
+        return True
+
+    monkeypatch.setattr(dialog, "confirm_install", confirm)
+    monkeypatch.setattr(dialog, "launch_installer", lambda path: events.append(("launch", path)))
+    dialog.check_button.click()
+    for _ in range(3):
+        worker = dialog.worker
+        assert worker is not None and worker.wait(10_000)
+        app.processEvents()
+    assert dialog.worker is None
+    assert events == [
+        ("check", True),
+        ("stage", release, tmp_path),
+        ("confirm", prepared),
+        ("recheck", prepared),
+        ("launch", prepared.path),
+    ]
+    dialog.reject()
+    window.close()
+
+
+def test_key_check_does_not_expose_key_and_exports_safe_log(app, tmp_path: Path, monkeypatch):
+    from PySide6.QtCore import QSettings
+
+    from ucheba import ui
+
+    key = "sk-or-v1-mock-private"
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = ui.MainWindow(tmp_path / "queue.sqlite3", settings)
+
+    def reject(received):
+        assert received == key
+        raise ui.OpenRouterError(f"Проверка отклонена: {received}")
+
+    monkeypatch.setattr(ui, "check_openrouter_key", reject)
+    check = ui.KeyCheckDialog(key, window.queue, window)
+    assert check.worker.wait(10_000)
+    app.processEvents()
+    assert check.close_button.isEnabled()
+    assert "Проверка отклонена: [скрыто]" in check.status.text()
+    assert key not in check.worker.key
+    check.reject()
+
+    log_name = tmp_path / "journal"
+    monkeypatch.setattr(
+        ui.QFileDialog,
+        "getSaveFileName",
+        lambda *_args: (str(log_name), "Текстовые файлы (*.txt)"),
+    )
+    window.save_diagnostics()
+    exported = log_name.with_suffix(".txt").read_text(encoding="utf-8-sig")
+    assert "Проверка ключа OpenRouter завершилась ошибкой" in exported
+    assert key not in exported
+    assert "Журнал обработки сохранён." == window.activity.text()
     window.close()

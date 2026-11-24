@@ -62,8 +62,16 @@ try {
         }
     }
     Invoke-CheckedProcess -FilePath (Join-Path $ApplicationDir 'UchebaAI.exe') -Arguments '--smoke-test' -Log $smokeLog.FullName
-    foreach ($tool in @('ffmpeg.exe', 'ffprobe.exe')) {
-        & (Join-Path $ApplicationDir $tool) -version | Select-Object -First 1
+    if (Test-Path -LiteralPath (Join-Path $ApplicationDir 'download-ffmpeg.txt')) {
+        foreach ($tool in @('ffmpeg.exe', 'ffprobe.exe')) {
+            if (Test-Path -LiteralPath (Join-Path $ApplicationDir $tool)) {
+                throw "Публикуемый пакет содержит $tool вместо загрузки от поставщика."
+            }
+        }
+    } else {
+        foreach ($tool in @('ffmpeg.exe', 'ffprobe.exe')) {
+            & (Join-Path $ApplicationDir $tool) -version | Select-Object -First 1
+        }
     }
 } finally {
     if ($Installer) {

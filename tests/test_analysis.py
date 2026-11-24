@@ -233,3 +233,40 @@ def test_summary_reduce_preserves_order_and_formula_case():
         candidates.index(point) for point in summary
     )
     assert analysis._unique_points(["a  = I", "a = I", "a = i"]) == ["a  = I", "a = i"]
+
+
+def test_check_key_performs_only_get_requests_and_never_returns_secrets() -> None:
+    from ucheba.analysis import check_openrouter_key
+    import httpx
+
+    class Requests:
+        paths: list[str] = []
+
+        def __call__(self, request: httpx.Request) -> httpx.Response:
+            assert request.method == "GET"
+            self.paths.append(request.url.path)
+            if request.url.path.endswith("/key"):
+                return httpx.Response(
+                    200,
+                    json={
+                        "data": {"label": "PRIVATE", "free_model_daily_requests": {"remaining": 5}}
+                    },
+                )
+            return httpx.Response(200, json={"data": []})
+
+    requests = Requests()
+    message = check_openrouter_key("sk-not-a-real-key", transport=httpx.MockTransport(requests))
+    assert requests.paths == ["/api/v1/key", "/api/v1/models"]
+    assert "принял ключ" in message and "5" in message
+    assert "PRIVATE" not in message and "sk-not-a-real-key" not in message
+
+
+def test_check_key_does_not_echo_remote_401() -> None:
+    import httpx
+    import pytest
+    from ucheba.analysis import OpenRouterError, check_openrouter_key
+
+    transport = httpx.MockTransport(lambda _: httpx.Response(401, text="private server details"))
+    with pytest.raises(OpenRouterError, match="отклонил ключ") as error:
+        check_openrouter_key("fake-key", transport=transport)
+    assert "private server" not in str(error.value)

@@ -40,6 +40,16 @@ Name: "desktopicon"; Description: "Создать ярлык на рабочем
 [Files]
 Source: "{#AppSource}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[InstallDelete]
+#ifdef ExternalMedia
+Type: files; Name: "{app}\ffmpeg.exe"
+Type: files; Name: "{app}\ffprobe.exe"
+Type: files; Name: "{app}\_internal\ucheba\models\diarization\embedding.onnx"
+#else
+Type: files; Name: "{app}\download-ffmpeg.txt"
+Type: files; Name: "{app}\_internal\ucheba\models\diarization\embedding-download.txt"
+#endif
+
 [Icons]
 Name: "{autoprograms}\Учёба AI"; Filename: "{app}\UchebaAI.exe"
 Name: "{autodesktop}\Учёба AI"; Filename: "{app}\UchebaAI.exe"; Tasks: desktopicon

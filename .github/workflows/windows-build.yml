@@ -45,15 +45,15 @@ jobs:
       - name: Собрать и проверить установщик и архив
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
-        run: ./scripts/build-windows.ps1 -ExpectedTag $env:RELEASE_TAG -TestInstaller
+        run: ./scripts/build-windows.ps1 -ExpectedTag $env:RELEASE_TAG -TestInstaller -DownloadFFmpegOnFirstUse
       - name: Загрузить результаты сборки
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: UchebaAI-Windows-x64
           path: |
-            release/UchebaAI-Setup-x64.exe
-            release/UchebaAI-Portable-x64.zip
-            release/SHA256SUMS.txt
+            release/public/UchebaAI-Setup-x64.exe
+            release/public/UchebaAI-Portable-x64.zip
+            release/public/SHA256SUMS.txt
           if-no-files-found: error
           compression-level: 0
       - name: Подготовить описание релиза

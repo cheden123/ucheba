@@ -1,7 +1,8 @@
 param(
     [string]$Iscc,
     [string]$ExpectedTag,
-    [switch]$TestInstaller
+    [switch]$TestInstaller,
+    [switch]$DownloadFFmpegOnFirstUse
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
@@ -19,20 +20,31 @@ try {
     }
 
     $build = New-Item -ItemType Directory -Force -Path 'build'
-    $output = New-Item -ItemType Directory -Force -Path 'release'
-    $env:PYINSTALLER_CONFIG_DIR = Join-Path $build.FullName 'pyinstaller-cache'
-    $dist = Join-Path $build.FullName 'frozen'
+    $outputPath = if ($DownloadFFmpegOnFirstUse) { 'release/public' } else { 'release' }
+    $output = New-Item -ItemType Directory -Force -Path $outputPath
+    $buildSuffix = if ($DownloadFFmpegOnFirstUse) { '-public' } else { '' }
+    $env:PYINSTALLER_CONFIG_DIR = Join-Path $build.FullName "pyinstaller-cache$buildSuffix"
+    $dist = Join-Path $build.FullName "frozen$buildSuffix"
+    $specPath = New-Item -ItemType Directory -Force -Path (Join-Path $build.FullName "spec$buildSuffix")
+    & $python "scripts/get-diarization-models.py"
     $arguments = @(
         '--noconfirm', '--clean', '--onedir', '--windowed', '--name', 'UchebaAI',
-        '--paths', 'src', '--specpath', $build.FullName, '--workpath', (Join-Path $build.FullName 'pyinstaller'),
+        '--paths', 'src', '--specpath', $specPath.FullName, '--workpath', (Join-Path $build.FullName "pyinstaller$buildSuffix"),
         '--distpath', $dist, '--collect-data', 'docx', '--collect-data', 'faster_whisper',
+        '--collect-binaries', 'sherpa_onnx', '--collect-submodules', 'sherpa_onnx',
+        '--add-data', "$($build.FullName)/diarization-models/segmentation.onnx:ucheba/models/diarization",
+        '--add-data', "$($build.FullName)/diarization-models/segmentation-LICENSE.txt:ucheba/models/diarization",
+        '--add-data', "$($build.FullName)/diarization-models/Источники.txt:ucheba/models/diarization",
         '--collect-data', 'ucheba', '--copy-metadata', 'ucheba-ai', '--copy-metadata', 'keyring',
         '--hidden-import', 'keyring.backends.Windows', '--collect-binaries', 'ctranslate2',
         '--exclude-module', 'mypy', '--exclude-module', 'pytest', '--exclude-module', 'pip',
         '--exclude-module', 'pip_audit', '--exclude-module', 'ruff'
     )
+    if (!$DownloadFFmpegOnFirstUse) {
+        $arguments += @('--add-data', "$($build.FullName)/diarization-models/embedding.onnx:ucheba/models/diarization")
+    }
     if (Test-Path -LiteralPath 'prompts' -PathType Container) {
-        $arguments += @('--add-data', 'prompts:prompts')
+        $arguments += @('--add-data', "$PWD/prompts:prompts")
     }
     $previousPath = $env:PATH
     try {
@@ -49,7 +61,12 @@ try {
     }
 
     $package = Join-Path $dist 'UchebaAI'
-    & "$PSScriptRoot/get-ffmpeg.ps1" -Destination $package
+    if ($DownloadFFmpegOnFirstUse) {
+        New-Item -ItemType File -Path (Join-Path $package 'download-ffmpeg.txt') | Out-Null
+        New-Item -ItemType File -Path (Join-Path $package '_internal/ucheba/models/diarization/embedding-download.txt') | Out-Null
+    } else {
+        & "$PSScriptRoot/get-ffmpeg.ps1" -Destination $package
+    }
     foreach ($name in @('README.md', 'CHANGELOG.md', 'LICENSE')) {
         if (Test-Path -LiteralPath $name -PathType Leaf) {
             Copy-Item -LiteralPath $name -Destination $package -Force
@@ -62,7 +79,9 @@ try {
     & $python -c "import shutil,sys; shutil.make_archive(sys.argv[1], 'zip', sys.argv[2])" $portable $package
 
     if (!$Iscc) { $Iscc = & "$PSScriptRoot/get-innosetup.ps1" }
-    & $Iscc "/DAppVersion=$version" "/DAppSource=$package" "/DAppOutput=$($output.FullName)" 'installer/UchebaAI.iss'
+    $installerArgs = @("/DAppVersion=$version", "/DAppSource=$package", "/DAppOutput=$($output.FullName)")
+    if ($DownloadFFmpegOnFirstUse) { $installerArgs += '/DExternalMedia=1' }
+    & $Iscc @installerArgs 'installer/UchebaAI.iss'
 
     $setup = Join-Path $output.FullName 'UchebaAI-Setup-x64.exe'
     if ($TestInstaller) {

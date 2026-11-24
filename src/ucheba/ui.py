@@ -9,6 +9,7 @@ from collections.abc import Callable
 from importlib.metadata import PackageNotFoundError, version
 from math import isfinite
 from pathlib import Path
+from sqlite3 import Error as SQLiteError
 from stat import S_ISREG
 from threading import Event, Thread
 from time import monotonic
@@ -58,7 +59,8 @@ from PySide6.QtWidgets import (
 )
 
 from . import updates
-from .analysis import OpenRouterError
+from .analysis import OpenRouterError, check_openrouter_key
+from .diagnostics import classify_failure, export_log, record_event
 from .documents import timestamp
 from .imports import IMPORTS, MEDIA, load_transcript
 from .models import Analysis, Assignment, Segment
@@ -109,6 +111,7 @@ class ProcessingThread(QThread):
         def cancelled() -> bool:
             return self.stop_requested.is_set() or queue.get(job.id).status == "cancelled"
 
+        record_event(queue, "job_start", job=job)
         key = None
         try:
             if job.cloud:
@@ -118,6 +121,15 @@ class ProcessingThread(QThread):
                     pass
             result = process(job, key=key, progress=self.progress.emit, cancelled=cancelled)
             queue.finish(job.id, "succeeded", result=result)
+            record_event(queue, "job_succeeded", job=job)
+            if job.auto_speakers or job.speaker_model is not None:
+                information = read_small_object(result / "metadata.json")
+                if information.get("speaker_warning"):
+                    record_event(queue, "speaker_warning", job=job)
+                elif information.get("lecturer_candidate"):
+                    record_event(queue, "speaker_candidate", job=job)
+                else:
+                    record_event(queue, "speaker_unresolved", job=job)
         except Exception as exc:
             if self.stop_requested.is_set():
                 queue.finish(job.id, "queued", message="Возобновление обработки")
@@ -134,6 +146,9 @@ class ProcessingThread(QThread):
                 if key:
                     message = message.replace(key, "[скрыто]")
                 queue.finish(job.id, "failed", message=message, result=partial_result(job))
+                record_event(queue, "job_failed", job=job, reason=classify_failure(exc))
+            else:
+                record_event(queue, "job_cancelled", job=job)
 
 
 class DirectoryScan(Thread):
@@ -201,6 +216,57 @@ def installed_copy() -> bool:
         return False
 
 
+class KeyCheckThread(QThread):
+    status = Signal(str)
+
+    def __init__(self, key: str, queue: QueueStore, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.key = key
+        self.queue = queue
+
+    def run(self) -> None:
+        key, self.key = self.key, ""
+        try:
+            message = check_openrouter_key(key)
+        except (OpenRouterError, ValueError) as exc:
+            message = str(exc).replace(key, "[скрыто]") if key else str(exc)
+            record_event(self.queue, "key_check_failed")
+        except Exception:
+            message = "Не удалось проверить ключ OpenRouter."
+            record_event(self.queue, "key_check_failed")
+        else:
+            if key:
+                message = message.replace(key, "[скрыто]")
+            record_event(self.queue, "key_check_ok")
+        self.status.emit(message)
+
+
+class KeyCheckDialog(QDialog):
+    def __init__(self, key: str, queue: QueueStore, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Проверка ключа OpenRouter")
+        layout = QVBoxLayout(self)
+        self.status = QLabel("Проверяем ключ. Текст лекций не отправляется.")
+        self.status.setTextFormat(Qt.TextFormat.PlainText)
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        self.close_button = QPushButton("Закрыть")
+        self.close_button.setEnabled(False)
+        self.close_button.clicked.connect(self.reject)
+        layout.addWidget(self.close_button)
+        self.worker = KeyCheckThread(key, queue, self)
+        self.worker.status.connect(self.status.setText)
+        self.worker.finished.connect(self.ready)
+        self.worker.start()
+
+    def ready(self) -> None:
+        self.close_button.setEnabled(True)
+
+    def reject(self) -> None:
+        if self.close_button.isEnabled():
+            super().reject()
+
+
 class UpdateDialog(QDialog):
     def __init__(self, window: MainWindow) -> None:
         super().__init__(window)
@@ -209,6 +275,7 @@ class UpdateDialog(QDialog):
         self.installer: updates.VerifiedInstaller | None = None
         self.worker: UpdateThread | None = None
         self.install_confirmed = False
+        self.online_install_pending = False
         self.resume_queue_on_failure = False
         self.is_installed = installed_copy()
         try:
@@ -220,7 +287,9 @@ class UpdateDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"Текущая версия · {self.current_version or 'не определена'}"))
         source_row = QHBoxLayout()
-        self.check_button = QPushButton("Проверить GitHub")
+        self.check_button = QPushButton(
+            "Обновить из GitHub…" if self.is_installed else "Проверить GitHub"
+        )
         self.check_button.clicked.connect(self.check_online)
         source_row.addWidget(self.check_button)
         self.local_button = QPushButton("Проверить папку с обновлением…")
@@ -243,9 +312,6 @@ class UpdateDialog(QDialog):
         self.release_button = QPushButton("Открыть выпуск")
         self.release_button.clicked.connect(self.open_release)
         row.addWidget(self.release_button)
-        self.download_button = QPushButton("Загрузить установщик")
-        self.download_button.clicked.connect(self.start_download)
-        row.addWidget(self.download_button)
         self.folder_button = QPushButton("Открыть папку")
         self.folder_button.clicked.connect(self.open_verified_folder)
         row.addWidget(self.folder_button)
@@ -293,19 +359,36 @@ class UpdateDialog(QDialog):
                 self.status.setText(worker.error)
             self.restore_queue()
         elif worker.error:
+            record_event(self.main_window.queue, "update_check_failed")
+            self.online_install_pending = False
             self.status.setText(worker.error)
         elif isinstance(result, Update):
+            record_event(self.main_window.queue, "update_check_ok")
             self.available_update = result
             self.notes.setPlainText(result.notes)
+            if self.online_install_pending:
+                self.start_request(
+                    lambda: updates.stage_online_update(result, self.private_update_dir()),
+                    f"Загрузка и проверка установщика версии {result.version}…",
+                )
+                return
             size = f"{result.installer_size / 1024**2:.1f}".replace(".", ",")
             self.status.setText(f"Доступна версия {result.version}. Размер установщика {size} МБ.")
         elif isinstance(result, updates.VerifiedInstaller):
+            record_event(self.main_window.queue, "update_ready")
             self.installer = result
             signature = "проверена" if result.signed else "отсутствует"
             self.status.setText(
                 f"Проверен установщик версии {result.version}. Проверка Authenticode · {signature}.\n{result.path}"
             )
+            if self.online_install_pending:
+                self.online_install_pending = False
+                self.update_buttons()
+                self.start_install()
+                return
         else:
+            self.online_install_pending = False
+            record_event(self.main_window.queue, "update_check_ok")
             self.status.setText("Установлена актуальная версия.")
         self.update_buttons()
 
@@ -316,13 +399,14 @@ class UpdateDialog(QDialog):
         self.local_button.setEnabled(idle and has_version)
         self.close_button.setEnabled(idle)
         self.release_button.setEnabled(self.available_update is not None)
-        self.download_button.setEnabled(idle and self.available_update is not None)
         self.folder_button.setEnabled(idle and self.installer is not None)
         self.install_button.setEnabled(idle and self.installer is not None and self.is_installed)
 
-    def check_online(self) -> None:
+    def check_online(self, *, install: bool = True) -> None:
         if self.worker is None and self.current_version is not None:
             self.available_update = None
+            self.installer = None
+            self.online_install_pending = install and self.is_installed
             self.notes.clear()
             self.start_request(
                 lambda: updates.check_update(self.current_version, require_public=True),
@@ -358,14 +442,6 @@ class UpdateDialog(QDialog):
     def open_verified_folder(self) -> None:
         if self.installer:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.installer.path.parent)))
-
-    def start_download(self) -> None:
-        if (release := self.available_update) and self.worker is None:
-            self.installer = None
-            self.start_request(
-                lambda: updates.stage_online_update(release, self.private_update_dir()),
-                "Загрузка и проверка установщика…",
-            )
 
     def start_install(self) -> None:
         if (installer := self.installer) is None or self.worker is not None or not installed_copy():
@@ -416,6 +492,7 @@ class UpdateDialog(QDialog):
         if not started:
             self.status.setText("Не удалось запустить установщик.")
             return False
+        record_event(self.main_window.queue, "update_launched")
         self.resume_queue_on_failure = False
         self.accept()
         self.main_window.close()
@@ -791,6 +868,7 @@ class SpeakerLoad(Thread):
         self.previews: dict[str, Segment] = {}
         self.review: dict[str, object] = {}
         self.candidate: str | None = None
+        self.warning = ""
         self.error = ""
 
     def run(self) -> None:
@@ -806,6 +884,9 @@ class SpeakerLoad(Thread):
             if previous is None or segment.end - segment.start > previous.end - previous.start:
                 self.previews[segment.speaker] = segment
         metadata = read_small_object(self.result / "metadata.json")
+        warning = metadata.get("speaker_warning")
+        if isinstance(warning, str):
+            self.warning = warning[:500]
         candidate = metadata.get("lecturer_candidate")
         if isinstance(candidate, str) and candidate in self.previews:
             self.candidate = candidate
@@ -880,8 +961,8 @@ class SpeakerReviewDialog(QDialog):
             return
         if not self.loader.previews:
             self.status.setText(
-                "В расшифровке нет меток говорящих. Для новой обработки выберите локальную "
-                "модель Community-1 или импортируйте расшифровку JSON с полем speaker."
+                self.loader.warning
+                or "В расшифровке нет меток говорящих. При новой обработке включите автоматическое разделение говорящих."
             )
             return
         message = (
@@ -889,6 +970,8 @@ class SpeakerReviewDialog(QDialog):
         )
         if self.loader.candidate:
             message += f" Возможный преподаватель — {self.loader.candidate}. Подтвердите роль после прослушивания."
+        else:
+            message += " Преподавателя пока не удалось определить с достаточной уверенностью."
         self.status.setText(message)
         self.table.setRowCount(len(self.loader.previews))
         for row, (speaker, sample) in enumerate(self.loader.previews.items()):
@@ -999,6 +1082,7 @@ class MainWindow(QMainWindow):
         self.button(actions, "Задания…", self.show_assignments)
         self.button(actions, "Обновления…", self.show_updates)
         self.button(actions, "Настройки…", self.edit_settings)
+        self.button(actions, "Журнал TXT…", self.save_diagnostics)
         layout.addLayout(actions)
 
         filters = QHBoxLayout()
@@ -1192,12 +1276,16 @@ class MainWindow(QMainWindow):
         template.setCurrentIndex(max(template.findData(self.document_template()), 0))
         form.addRow("Оформление Word", template)
         speaker_model = str(self.settings.value("speaker_model", "")).strip()
-        use_speakers = QCheckBox("Разделить говорящих локальной моделью Community-1")
         media_selected = any(source.suffix.lower() in MEDIA for source in sources)
+        auto_speakers = QCheckBox("Автоматически разделить говорящих")
+        auto_speakers.setEnabled(media_selected)
+        auto_speakers.setChecked(media_selected)
+        form.addRow(auto_speakers)
+        use_speakers = QCheckBox("Использовать локальную модель Community-1")
         engine_available = not getattr(sys, "frozen", False)
         use_speakers.setEnabled(engine_available and bool(speaker_model) and media_selected)
         if not engine_available:
-            use_speakers.setToolTip("Автоматическая диаризация доступна при запуске из исходников.")
+            use_speakers.setToolTip("Дополнительная модель доступна при запуске из исходников.")
         elif not speaker_model:
             use_speakers.setToolTip("Укажите папку модели Community-1 в настройках.")
         form.addRow(use_speakers)
@@ -1265,6 +1353,7 @@ class MainWindow(QMainWindow):
                     cloud=cloud.isChecked(),
                     template=template.currentData(),
                     slides=slides.isChecked() and source.suffix.lower() in VIDEO_EXTENSIONS,
+                    auto_speakers=auto_speakers.isChecked() and source.suffix.lower() in MEDIA,
                     speaker_model=(
                         Path(speaker_model)
                         if use_speakers.isChecked() and source.suffix.lower() in MEDIA
@@ -1312,6 +1401,27 @@ class MainWindow(QMainWindow):
         form.addRow(QLabel("Ключ хранится в диспетчере учётных данных Windows."))
         form.addRow("Ключ OpenRouter", secret)
         form.addRow(delete)
+
+        def check_key() -> None:
+            key = secret.text().strip()
+            if not key and not delete.isChecked():
+                try:
+                    key = WinVaultKeyring().get_password(KEY_SERVICE, KEY_ACCOUNT) or ""
+                except (KeyringError, OSError):
+                    QMessageBox.warning(
+                        dialog, "OpenRouter", "Хранилище учётных данных недоступно."
+                    )
+                    return
+            if not key:
+                QMessageBox.information(dialog, "OpenRouter", "Введите ключ для проверки.")
+                return
+            check = KeyCheckDialog(key, self.queue, dialog)
+            check.exec()
+            check.deleteLater()
+
+        key_actions = QHBoxLayout()
+        self.button(key_actions, "Проверить ключ", check_key)
+        form.addRow(key_actions)
         theme = QComboBox()
         theme.addItems(list(THEMES))
         theme.setCurrentText(str(self.settings.value("theme", "Системная")))
@@ -1436,6 +1546,7 @@ class MainWindow(QMainWindow):
                     model=str(self.settings.value("model", "small")),
                     device=str(self.settings.value("device", "cpu")),
                     cloud=False,
+                    auto_speakers=True,
                     template=self.document_template(),
                 )
             else:
@@ -1513,8 +1624,25 @@ class MainWindow(QMainWindow):
             dialog.exec()
             dialog.deleteLater()
 
+    def save_diagnostics(self) -> None:
+        name, _ = QFileDialog.getSaveFileName(
+            self, "Экспорт журнала обработки", "Учёба-AI-журнал.txt", "Текстовые файлы (*.txt)"
+        )
+        if not name:
+            return
+        destination = Path(name)
+        if not destination.suffix:
+            destination = destination.with_suffix(".txt")
+        try:
+            export_log(self.queue, destination)
+        except (OSError, SQLiteError, ValueError):
+            QMessageBox.warning(self, "Журнал TXT", "Не удалось сохранить журнал обработки.")
+            return
+        self.activity.setText("Журнал обработки сохранён.")
+
     def show_updates(self) -> None:
         dialog = UpdateDialog(self)
+        dialog.check_online(install=False)
         dialog.exec()
         dialog.deleteLater()
 
@@ -1559,7 +1687,9 @@ def main() -> int:
         QMessageBox.information(None, "Учёба AI", "Приложение уже открыто.")
         return 1
     database = data / "queue.sqlite3"
-    QueueStore(database).recover()
+    queue = QueueStore(database)
+    queue.recover()
+    record_event(queue, "session_start")
     window = MainWindow(database)
     window.show()
     return app.exec()

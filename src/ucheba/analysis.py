@@ -167,16 +167,75 @@ def _models(client: httpx.Client, preferred: str | None) -> list[FreeModel]:
     )
 
 
-def _remaining_daily_requests(client: httpx.Client) -> int | None:
+def _key_details(client: httpx.Client) -> dict[str, Any]:
     response = client.get("key")
     response.raise_for_status()
     try:
         data = response.json()["data"]
-        quota = data.get("free_model_daily_requests")
-        remaining = quota.get("remaining") if isinstance(quota, dict) else None
-    except (AttributeError, KeyError, TypeError, ValueError):
+        if not isinstance(data, dict):
+            raise TypeError
+    except (KeyError, TypeError, ValueError):
         raise OpenRouterError("OpenRouter вернул некорректный ответ при проверке ключа.") from None
+    return data
+
+
+def _quota_remaining(data: dict[str, Any]) -> int | None:
+    quota = data.get("free_model_daily_requests")
+    remaining = quota.get("remaining") if isinstance(quota, dict) else None
     return remaining if type(remaining) is int and remaining >= 0 else None
+
+
+def _remaining_daily_requests(client: httpx.Client) -> int | None:
+    return _quota_remaining(_key_details(client))
+
+
+def check_openrouter_key(key: str, *, transport: httpx.BaseTransport | None = None) -> str:
+    """Проверить ключ и каталог без запроса к модели."""
+    secret = key.strip()
+    if not secret:
+        raise ValueError("Введите или сохраните ключ OpenRouter.")
+    if not secret.isascii() or any(not 33 <= ord(char) <= 126 for char in secret):
+        raise ValueError("В ключе OpenRouter есть недопустимые символы.")
+    try:
+        with httpx.Client(
+            base_url=API_URL,
+            headers={"Authorization": "Bearer " + secret},
+            transport=transport,
+            timeout=12.0,
+            trust_env=False,
+        ) as client:
+            details = _key_details(client)
+            if details.get("is_management_key") is True:
+                raise OpenRouterError("Для анализа нужен обычный API-ключ OpenRouter.")
+            remaining = _quota_remaining(details)
+            try:
+                count = len(_models(client, None))
+            except (httpx.HTTPError, OpenRouterError):
+                model_status = "Каталог моделей сейчас недоступен."
+            else:
+                model_status = (
+                    f"Бесплатных маршрутов для текста: {count}."
+                    if count
+                    else "Подходящих бесплатных моделей сейчас нет."
+                )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in {401, 403}:
+            raise OpenRouterError(
+                "OpenRouter отклонил ключ. Проверьте, что ключ действителен."
+            ) from None
+        if exc.response.status_code == 429:
+            raise OpenRouterError(
+                "OpenRouter ограничил частоту запросов. Повторите позже."
+            ) from None
+        raise OpenRouterError("OpenRouter сейчас не смог проверить ключ.") from None
+    except httpx.RequestError:
+        raise OpenRouterError("Не удалось связаться с OpenRouter.") from None
+    quota = (
+        f"Осталось бесплатных запросов: {remaining}."
+        if remaining is not None
+        else "Остаток бесплатного лимита API не сообщил."
+    )
+    return f"OpenRouter принял ключ. {model_status} {quota}"
 
 
 def _chunks(

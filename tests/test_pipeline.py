@@ -171,3 +171,64 @@ def test_selected_word_preset_survives_queue_and_export(tmp_path: Path) -> None:
     doc = Document(str(folder / "01_Полный_текст_лекции.docx"))
     assert doc.styles["Normal"].font.name == "Calibri"
     assert doc.styles["Normal"].font.size.pt == 10
+
+
+def test_builtin_lecturer_label_is_persisted_and_exported(tmp_path: Path, monkeypatch) -> None:
+    import json
+
+    from ucheba.diarization import DiarizationResult
+    from ucheba.models import Segment
+
+    source = tmp_path / "lecture.mp4"
+    source.touch()
+    queue = QueueStore(tmp_path / "profile" / "queue.db")
+    job = queue.add(
+        source,
+        tmp_path / "reports",
+        model="base",
+        device="cpu",
+        cloud=False,
+        auto_speakers=True,
+    )
+    assert queue.get(job.id).auto_speakers
+    speech = Segment(start=42, end=51, text="Запишите задание.")
+    teacher = speech.model_copy(update={"speaker": "Говорящий 1"})
+    monkeypatch.setattr("ucheba.transcription.transcribe", lambda *args, **kwargs: [speech])
+    monkeypatch.setattr(
+        "ucheba.builtin_diarization.diarize_builtin",
+        lambda *args, **kwargs: DiarizationResult([teacher], [], "Говорящий 1"),
+    )
+    result = process(job, None, lambda _: None, lambda: False)
+    metadata = json.loads((result / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["lecturer_candidate"] == teacher.speaker
+    report = Document(str(result / "05_Вероятная_речь_преподавателя.docx"))
+    assert any("[00:00:42] Запишите задание." in p.text for p in report.paragraphs)
+
+
+def test_builtin_failure_keeps_complete_transcript(tmp_path: Path, monkeypatch) -> None:
+    import json
+
+    from ucheba.models import Segment
+
+    source = tmp_path / "lecture.mp4"
+    source.touch()
+    queue = QueueStore(tmp_path / "profile" / "queue.db")
+    job = queue.add(
+        source, tmp_path / "reports", model="base", device="cpu", cloud=False, auto_speakers=True
+    )
+    monkeypatch.setattr(
+        "ucheba.transcription.transcribe",
+        lambda *args, **kwargs: [
+            Segment(start=0, end=5, text="Текст лекции"),
+        ],
+    )
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("Разделение голосов недоступно.")
+
+    monkeypatch.setattr("ucheba.builtin_diarization.diarize_builtin", fail)
+    result = process(job, None, lambda _: None, lambda: False)
+    assert (result / "01_Полный_текст_лекции.docx").is_file()
+    metadata = json.loads((result / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["speaker_warning"] == "Разделение голосов недоступно."
+    assert metadata["lecturer_candidate"] is None
