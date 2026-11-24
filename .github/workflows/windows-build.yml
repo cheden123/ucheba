@@ -1,0 +1,70 @@
+name: Сборка Windows x64
+
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
+        default: ''
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          architecture: x64
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Установить зависимости
+        run: python -m pip install ".[dev,build]"
+      - name: Проверить форматирование, код и типы
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m ruff format --check src tests scripts
+          python -m ruff check src tests scripts
+          python -m mypy
+      - name: Подготовить FFmpeg для интеграционных тестов
+        run: |
+          $directory = Join-Path $PWD 'build/test-tools'
+          ./scripts/get-ffmpeg.ps1 -Destination $directory
+          $directory | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Запустить тесты
+        run: python -m pytest
+      - name: Собрать и проверить установщик и архив
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: ./scripts/build-windows.ps1 -ExpectedTag $env:RELEASE_TAG -TestInstaller
+      - name: Загрузить результаты сборки
+        uses: actions/upload-artifact@v4
+        with:
+          name: UchebaAI-Windows-x64
+          path: |
+            release/UchebaAI-Setup-x64.exe
+            release/UchebaAI-Portable-x64.zip
+            release/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+      - name: Подготовить описание релиза
+        if: inputs.release_tag != ''
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: ./scripts/release-notes.ps1 -Tag $env:RELEASE_TAG
+      - name: Загрузить описание релиза
+        if: inputs.release_tag != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release/notes.md
+          if-no-files-found: error

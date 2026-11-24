@@ -1,0 +1,5 @@
+name = "desktop"
+description = "Разрабатывай интерфейс Qt, очередь и библиотеку."
+model = "gpt-6.2-sol"
+model_reasoning_effort = "high"
+developer_instructions = "Разрабатывай интерфейс Qt, очередь и библиотеку. Работай в назначенных файлах. Секреты и записи лекций не публикуй."

@@ -1,0 +1,5 @@
+name = "media"
+description = "Разрабатывай обработку FFmpeg и локальное распознавание речи."
+model = "gpt-6.2-sol"
+model_reasoning_effort = "high"
+developer_instructions = "Разрабатывай обработку FFmpeg и локальное распознавание речи. Работай в назначенных файлах. Секреты и записи лекций не публикуй."

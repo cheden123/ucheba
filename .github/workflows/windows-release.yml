@@ -1,0 +1,51 @@
+name: Публикация Windows x64
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: windows-2025
+    steps:
+      - name: Проверить выбранный тег
+        run: |
+          if ($env:GITHUB_REF -cnotmatch '^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$') {
+            throw 'Для публикации выберите существующий тег vMAJOR.MINOR.PATCH.'
+          }
+  build:
+    needs: verify
+    uses: ./.github/workflows/windows-build.yml
+    with:
+      release_tag: ${{ github.ref_name }}
+  security:
+    needs: verify
+    uses: ./.github/workflows/security-scan.yml
+  publish:
+    needs: [build, security]
+    runs-on: windows-2025
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: UchebaAI-Windows-x64
+          path: release
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: release
+      - name: Создать GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --verify-tag --title "Учёба AI $env:GITHUB_REF_NAME" --notes-file release/notes.md release/UchebaAI-Setup-x64.exe release/UchebaAI-Portable-x64.zip release/SHA256SUMS.txt

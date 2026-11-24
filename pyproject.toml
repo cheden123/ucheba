@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ucheba-ai"
+version = "0.1.0"
+description = "Локальная обработка учебных лекций и создание документов Word"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "faster-whisper==1.2.1",
+    "httpx==0.28.1",
+    "keyring==25.7.0",
+    "numpy==2.5.5",
+    "pydantic==2.14.4",
+    "PySide6==6.12.0",
+    "python-docx==1.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy==2.4.1",
+    "pytest==9.0.3",
+    "ruff==0.15.10",
+]
+build = ["pyinstaller==6.22.3"]
+audit = ["pip-audit==2.10.0"]
+
+[project.gui-scripts]
+ucheba = "ucheba.ui:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ucheba = ["prompts/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = [".runtime", "release"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src/ucheba"]
+ignore_missing_imports = true

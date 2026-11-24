@@ -1,0 +1,48 @@
+#ifndef AppVersion
+  #error AppVersion is required
+#endif
+#ifndef AppSource
+  #error AppSource is required
+#endif
+#ifndef AppOutput
+  #error AppOutput is required
+#endif
+
+[Setup]
+AppId={{9A4F80D8-9AD1-4B56-955B-4F261461413C}
+AppName=Учёба AI
+AppVersion={#AppVersion}
+AppPublisher=Учёба AI
+AppPublisherURL=https://github.com/cheden123/ucheba
+AppSupportURL=https://github.com/cheden123/ucheba/issues
+DefaultDirName={localappdata}\Programs\UchebaAI
+DefaultGroupName=Учёба AI
+UninstallDisplayIcon={app}\UchebaAI.exe
+PrivilegesRequired=lowest
+ArchitecturesAllowed=x64os
+ArchitecturesInstallIn64BitMode=x64os
+MinVersion=10.0.22000
+OutputDir={#AppOutput}
+OutputBaseFilename=UchebaAI-Setup-x64
+Compression=lzma2
+SolidCompression=yes
+WizardStyle=modern
+DisableProgramGroupPage=yes
+CloseApplications=yes
+RestartApplications=no
+
+[Languages]
+Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "Создать ярлык на рабочем столе"; Flags: unchecked
+
+[Files]
+Source: "{#AppSource}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{autoprograms}\Учёба AI"; Filename: "{app}\UchebaAI.exe"
+Name: "{autodesktop}\Учёба AI"; Filename: "{app}\UchebaAI.exe"; Tasks: desktopicon
+
+[Run]
+Filename: "{app}\UchebaAI.exe"; Description: "Запустить Учёба AI"; Flags: nowait postinstall skipifsilent
