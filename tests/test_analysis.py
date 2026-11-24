@@ -162,10 +162,7 @@ def test_daily_quota_exhausted_never_posts():
 
 
 def test_student_text_is_not_accepted_and_title_is_sourced() -> None:
-    import json
-
     from ucheba.analysis import _chunks, _parse
-    from ucheba.models import Segment
 
     text = "Прочитайте третью главу до пятницы."
     student = Segment(text=text, start=0, end=1, speaker="Студент 2")
@@ -186,3 +183,53 @@ def test_student_text_is_not_accepted_and_title_is_sourced() -> None:
     _, _, assignments = _parse({"summary": [], "details": [], "assignments": rows}, evidence)
     assert [item.title for item in assignments] == ["Прочитайте третью главу"]
     assert assignments[0].speaker == "Преподаватель"
+    assert assignments[0].source_kind == "speech"
+
+
+def test_slide_marked_as_source_and_ungrounded_date_removed():
+    slide = "Домашнее задание\nСдать отчёт  до пятницы."
+    assignment = {
+        "id": 2,
+        "title": "Отчёт",
+        "quote": "Домашнее задание Сдать отчёт до пятницы.",
+        "requirements": "Сдать отчёт",
+        "deadline": "до 18 декабря",
+        "plan": [],
+    }
+
+    def mock(request):
+        if request.url.path.endswith("/key"):
+            return httpx.Response(200, json={"data": {}})
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [catalog_row()]})
+        sent = json.loads(request.content)
+        fragments = [json.loads(line) for line in sent["messages"][1]["content"].splitlines()]
+        assert [row["source_kind"] for row in fragments] == ["speech", "slide", "speech"]
+        assert fragments[1]["text"] == slide
+        return completion([assignment, {**assignment, "id": 3}])
+
+    result = analyze(
+        [
+            Segment(start=10, end=20, text="Перейдём к домашнему заданию."),
+            Segment(start=70, end=75, text="На сегодня всё."),
+        ],
+        "fake-key",
+        slides=[(35.5, slide)],
+        transport=httpx.MockTransport(mock),
+    )
+    assert len(result.assignments) == 1
+    extracted = result.assignments[0]
+    assert (extracted.start, extracted.end, extracted.source_kind) == (35.5, 35.5, "slide")
+    assert extracted.quote == slide
+    assert extracted.deadline is None
+
+
+def test_summary_reduce_preserves_order_and_formula_case():
+    candidates = [f"Понятие номер {index}." for index in range(50)]
+    summary = analysis._brief_points(candidates)
+    assert len(summary) == analysis.SUMMARY_LIMIT
+    assert (summary[0], summary[-1]) == (candidates[0], candidates[-1])
+    assert [candidates.index(point) for point in summary] == sorted(
+        candidates.index(point) for point in summary
+    )
+    assert analysis._unique_points(["a  = I", "a = I", "a = i"]) == ["a  = I", "a = i"]

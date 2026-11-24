@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ucheba-ai"
-version = "0.1.0"
+version = "0.2.0"
 description = "Локальная обработка учебных лекций и создание документов Word"
 requires-python = ">=3.12,<3.13"
 dependencies = [

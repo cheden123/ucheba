@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import json
 import re
+import shutil
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from docx import Document
 from docx.document import Document as WordDocument
@@ -12,6 +15,9 @@ from docx.shared import Cm, Pt
 from docx.styles.style import ParagraphStyle
 
 from .models import Analysis, Segment
+
+if TYPE_CHECKING:
+    from .slides import Slide
 
 INVALID_XML = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
 
@@ -113,7 +119,10 @@ def export(
         tasks.add_heading(safe_text(task.title), 2)
         tasks.add_paragraph(safe_text(task.requirements))
         tasks.add_paragraph("Срок сдачи: " + safe_text(task.deadline or "не указан"))
-        label = f"[{timestamp(task.start)}] " if task.end > task.start else ""
+        timed = task.end > task.start or task.source_kind == "slide"
+        label = f"[{timestamp(task.start)}] " if timed else ""
+        if task.source_kind == "slide":
+            label += "Текст слайда (OCR): "
         speaker = f"{task.speaker}: " if task.speaker else ""
         tasks.add_paragraph(safe_text(f"{label}{speaker}«{task.quote}»"))
         if task.plan:
@@ -124,3 +133,31 @@ def export(
     data = analysis.model_dump(mode="json")
     write_json(folder / "analysis.json", data)
     write_json(folder / "tasks.json", data["assignments"])
+
+
+def export_slides(folder: Path, title: str, slides: list[Slide]) -> None:
+    document = academic_document()
+    document.add_heading(safe_text(title), 0)
+    document.add_heading("Кадры лекции", 1)
+    document.add_paragraph(
+        "Кадры выбраны автоматически. Текст OCR может содержать ошибки или текст других окон."
+    )
+    frames = folder / "frames"
+    frames.mkdir()
+    index = []
+    for number, slide in enumerate(slides, start=1):
+        path = frames / f"{number:03d}{slide.image.suffix.lower()}"
+        shutil.copyfile(slide.image, path)
+        document.add_heading(timestamp(slide.start), 2)
+        document.add_picture(str(path), width=Cm(15))
+        if slide.text.strip():
+            document.add_paragraph(safe_text(slide.text))
+        index.append(
+            {
+                "start": slide.start,
+                "image": path.relative_to(folder).as_posix(),
+                "text": slide.text,
+            }
+        )
+    document.save(str(folder / "04_Слайды_лекции.docx"))
+    write_json(folder / "slides.json", index)

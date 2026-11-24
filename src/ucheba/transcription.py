@@ -13,6 +13,7 @@ import time
 import wave
 from collections.abc import Callable
 from pathlib import Path
+from typing import BinaryIO
 
 import numpy as np
 from numpy.typing import NDArray
@@ -44,12 +45,18 @@ def _tool(name: str) -> str:
     return result
 
 
-def _run(command: list[str], cancelled: Callable[[], bool], timeout: float) -> str:
+def _run(
+    command: list[str],
+    cancelled: Callable[[], bool],
+    timeout: float,
+    *,
+    stdin: BinaryIO | None = None,
+) -> str:
     _continue(cancelled)
     try:
         with subprocess.Popen(
             command,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL if stdin is None else stdin,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),

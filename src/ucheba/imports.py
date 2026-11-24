@@ -11,6 +11,7 @@ MEDIA = frozenset(
     ".mp4 .mkv .avi .mov .webm .wmv .m4v .mpeg .ts "
     ".mp3 .wav .m4a .aac .flac .ogg .opus .wma".split()
 )
+VIDEO = frozenset(".mp4 .mkv .avi .mov .webm .wmv .m4v .mpeg .ts".split())
 IMPORTS = frozenset({".txt", ".docx", ".srt", ".vtt", ".json"})
 TIMECODE = r"(?:(?:\d{2,}):)?[0-5]\d:[0-5]\d[.,]\d{3}"
 CUE = re.compile(rf"^({TIMECODE})\s+-->\s+({TIMECODE})(?:\s+.*)?$")

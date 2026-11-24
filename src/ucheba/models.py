@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -14,6 +16,7 @@ class Assignment(BaseModel):
     deadline: str | None = None
     plan: list[str] = Field(default_factory=list)
     quote: str
+    source_kind: Literal["speech", "slide"] = "speech"
     speaker: str | None = None
     start: float
     end: float

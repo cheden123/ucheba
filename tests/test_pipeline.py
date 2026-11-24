@@ -57,3 +57,98 @@ def test_cloud_failure_leaves_word_and_source_replacement_needs_consent(tmp_path
     source.write_text("Совершенно другая запись", encoding="utf-8")
     with pytest.raises(ValueError, match="Исходная запись изменилась"):
         process(job, "fake-key", lambda message: None, lambda: False)
+
+
+def test_queue_keeps_optional_processing_settings(tmp_path: Path) -> None:
+    queue = QueueStore(tmp_path / "queue.db")
+    model = tmp_path / "community"
+    added = queue.add(
+        tmp_path / "lecture.mp4",
+        tmp_path / "results",
+        model="base",
+        device="cpu",
+        cloud=False,
+        slides=True,
+        speaker_model=model,
+    )
+    claimed = QueueStore(tmp_path / "queue.db").claim_next()
+    assert claimed is not None and claimed.id == added.id
+    assert claimed.slides and claimed.speaker_model == model
+
+
+def test_speaker_review_keeps_source_and_students(tmp_path: Path) -> None:
+    from ucheba.documents import write_json
+    from ucheba.speakers import save_review
+
+    original = tmp_path / "transcript.json"
+    write_json(
+        original,
+        [
+            {"text": "Выполните расчёт", "start": 3, "end": 4, "speaker": "A"},
+            {"text": "Какие единицы?", "start": 7, "end": 8, "speaker": "B"},
+            {"text": "Фон", "start": 10, "end": 11, "speaker": "C"},
+        ],
+    )
+    before = original.read_bytes()
+    result = save_review(
+        tmp_path,
+        {"A": ("Петрова", "lecturer"), "B": ("Студент", "student"), "C": ("Фон", "ignore")},
+    )
+    text = "\n".join(p.text for p in Document(str(result)).paragraphs)
+    assert "Петрова" in text and "Какие единицы?" in text and "Фон" not in text
+    assert original.read_bytes() == before
+
+
+def test_diarization_failure_preserves_transcript(tmp_path: Path, monkeypatch) -> None:
+    from ucheba.models import Segment
+    from ucheba.pipeline import partial_result
+
+    source = tmp_path / "lecture.mp4"
+    source.touch()
+    queue = QueueStore(tmp_path / "profile" / "queue.db")
+    job = queue.add(
+        source,
+        tmp_path / "shared",
+        model="base",
+        device="cpu",
+        cloud=False,
+        speaker_model=tmp_path / "model",
+    )
+    monkeypatch.setattr(
+        "ucheba.transcription.transcribe",
+        lambda *a, **kw: [
+            Segment(start=0, end=1, text="Распознанная лекция"),
+        ],
+    )
+
+    def fail(*args, **kwargs):
+        raise ValueError("Длительность превышает предел.")
+
+    monkeypatch.setattr("ucheba.diarization.diarize", fail)
+    with pytest.raises(ValueError, match="Длительность"):
+        process(job, None, lambda _: None, lambda: False)
+    partial = partial_result(job)
+    assert partial is not None and (partial / "01_Полный_текст_лекции.docx").is_file()
+    assert partial.is_relative_to(tmp_path / "profile")
+    assert not (job.output / ".ucheba-checkpoints").exists()
+
+
+def test_cloud_ignores_untrusted_checkpoint_on_results_share(tmp_path: Path, monkeypatch) -> None:
+    from ucheba.models import Analysis
+
+    source = tmp_path / "source.txt"
+    source.write_text("Согласованный текст", encoding="utf-8")
+    queue = QueueStore(tmp_path / "profile" / "queue.db")
+    job = queue.add(source, tmp_path / "shared", model="base", device="cpu", cloud=True)
+    untrusted = job.output / ".ucheba-checkpoints" / job.id / "Расшифровка"
+    untrusted.mkdir(parents=True)
+    (untrusted / "transcript.json").write_text("Несогласованный текст", encoding="utf-8")
+    (untrusted / "metadata.json").write_text("{}", encoding="utf-8")
+
+    def fake_analysis(segments, *_args, **_kwargs):
+        assert [item.text for item in segments] == ["Согласованный текст"]
+        return Analysis()
+
+    monkeypatch.setattr("ucheba.analysis.analyze", fake_analysis)
+    output = process(job, "fake-key", lambda _: None, lambda: False)
+    assert (output / "02_Конспект_лекции.docx").is_file()

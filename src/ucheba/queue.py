@@ -18,6 +18,9 @@ class Job:
     message: str
     result: Path | None
     source_identity: str | None = None
+    slides: bool = False
+    speaker_model: Path | None = None
+    state_dir: Path | None = None
 
 
 def source_identity(path: Path) -> str:
@@ -47,10 +50,15 @@ class QueueStore:
                 )
             """)
 
-            if "source_identity" not in {
-                row["name"] for row in db.execute("PRAGMA table_info(jobs)")
-            }:
-                db.execute("ALTER TABLE jobs ADD COLUMN source_identity TEXT")
+            db.execute("BEGIN IMMEDIATE")
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)")}
+            for field, sql in (
+                ("source_identity", "ALTER TABLE jobs ADD COLUMN source_identity TEXT"),
+                ("slides", "ALTER TABLE jobs ADD COLUMN slides INTEGER NOT NULL DEFAULT 0"),
+                ("speaker_model", "ALTER TABLE jobs ADD COLUMN speaker_model TEXT"),
+            ):
+                if field not in columns:
+                    db.execute(sql)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -62,8 +70,7 @@ class QueueStore:
         finally:
             db.close()
 
-    @staticmethod
-    def _job(row: sqlite3.Row) -> Job:
+    def _job(self, row: sqlite3.Row) -> Job:
         return Job(
             row["id"],
             Path(row["source"]),
@@ -75,15 +82,28 @@ class QueueStore:
             row["message"],
             Path(row["result"]) if row["result"] else None,
             row["source_identity"],
+            bool(row["slides"]),
+            Path(row["speaker_model"]) if row["speaker_model"] else None,
+            self.path.parent / "checkpoints",
         )
 
-    def add(self, source: Path, output: Path, *, model: str, device: str, cloud: bool) -> Job:
+    def add(
+        self,
+        source: Path,
+        output: Path,
+        *,
+        model: str,
+        device: str,
+        cloud: bool,
+        slides: bool = False,
+        speaker_model: Path | None = None,
+    ) -> Job:
         job_id = uuid4().hex
         identity = source_identity(source) if cloud else None
         with self._connect() as db:
             db.execute(
-                "INSERT INTO jobs(id, source, output, model, device, cloud, status, source_identity) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)",
+                "INSERT INTO jobs(id, source, output, model, device, cloud, status, source_identity, slides, speaker_model) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)",
                 (
                     job_id,
                     str(source.absolute()),
@@ -92,6 +112,8 @@ class QueueStore:
                     device,
                     cloud,
                     identity,
+                    slides,
+                    str(speaker_model.absolute()) if speaker_model else None,
                 ),
             )
         return self.get(job_id)
