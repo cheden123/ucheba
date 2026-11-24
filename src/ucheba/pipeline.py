@@ -55,11 +55,11 @@ def _publish(
     folder.parent.mkdir(parents=True, exist_ok=True)
     temp = Path(mkdtemp(prefix=f".ucheba-{job.id}-", dir=folder.parent))
     try:
-        export(temp, job.source.stem, segments, analysis)
+        export(temp, job.source.stem, segments, analysis, template=job.template)
         if slides:
             from .documents import export_slides
 
-            export_slides(temp, job.source.stem, slides)
+            export_slides(temp, job.source.stem, slides, template=job.template)
         with (temp / "transcript.json").open("rb") as stream:
             transcript_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
         write_json(

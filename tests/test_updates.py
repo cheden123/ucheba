@@ -81,3 +81,48 @@ def test_discards_an_installer_with_mismatched_checksum(tmp_path: Path) -> None:
     with pytest.raises(updates.UpdateError, match="сумма"):
         updates.download_update(update, tmp_path, transport=httpx.MockTransport(reply))
     assert not list(tmp_path.iterdir())
+
+
+def test_missing_release_can_be_distinguished_from_current() -> None:
+    transport = httpx.MockTransport(lambda request: httpx.Response(404))
+    assert updates.check_update("0.1.0", transport=transport) is None
+    with pytest.raises(updates.NoPublicRelease):
+        updates.check_update("0.1.0", transport=transport, require_public=True)
+
+
+def _local_release(folder: Path, content: bytes, *, checksum: str | None = None) -> Path:
+    folder.mkdir()
+    source = folder / "UchebaAI-Setup-x64.exe"
+    source.write_bytes(content)
+    checksum = checksum or hashlib.sha256(content).hexdigest()
+    (folder / "SHA256SUMS.txt").write_text(f"{checksum}  {source.name}\n", encoding="utf-8")
+    return source
+
+
+def test_offline_stages_and_rechecks_local_installer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _local_release(tmp_path / "release", b"MZ original")
+    monkeypatch.setattr(updates, "_installer_version", lambda path: "0.10.0")
+    monkeypatch.setattr(updates, "_verify_signature", lambda path: False)
+    staged = updates.stage_offline_update(source.parent, tmp_path / "cache", "0.9.1")
+    assert staged.version == "0.10.0"
+    assert not staged.signed
+    assert staged.path != source
+    source.write_bytes(b"MZ modified")
+    assert updates.verify_installer_for_launch(staged).read_bytes() == b"MZ original"
+    staged.path.write_bytes(b"MZ modified")
+    with pytest.raises(updates.UpdateError, match="Контрольная сумма"):
+        updates.verify_installer_for_launch(staged)
+
+
+@pytest.mark.parametrize("bad_hash", [False, True])
+def test_rejects_offline_version_or_mismatched_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_hash: bool
+) -> None:
+    source = _local_release(tmp_path / "release", b"MZ", checksum="0" * 64 if bad_hash else None)
+    monkeypatch.setattr(updates, "_installer_version", lambda path: "1.0.0")
+    cache = tmp_path / "cache"
+    with pytest.raises(updates.UpdateError, match="сумма" if bad_hash else "новее"):
+        updates.stage_offline_update(source.parent, cache, "1.0.0")
+    assert not list(cache.iterdir())

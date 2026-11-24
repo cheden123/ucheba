@@ -14,6 +14,7 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
 from docx.styles.style import ParagraphStyle
 
+from .formulas import add_math_text
 from .models import Analysis, Segment
 
 if TYPE_CHECKING:
@@ -39,23 +40,34 @@ def write_json(path: Path, data: Any) -> None:
 
 
 def academic_document() -> WordDocument:
+    return formatted_document()
+
+
+def formatted_document(template: str = "academic") -> WordDocument:
+    presets = {
+        "academic": ("Times New Roman", 14, 1.5, 3.0, 1.5, 2.0),
+        "standard": ("Calibri", 12, 1.2, 2.0, 2.0, 2.0),
+        "compact": ("Calibri", 10, 1.0, 1.65, 1.65, 1.5),
+        "modern": ("Aptos", 12, 1.3, 2.15, 2.15, 2.1),
+    }
+    font, size, spacing, left, right, vertical = presets.get(template, presets["academic"])
     document = Document()
     document.core_properties.language = "ru-RU"
     section = document.sections[0]
     section.page_width = Cm(21)
     section.page_height = Cm(29.7)
-    section.left_margin = Cm(3)
-    section.right_margin = Cm(1.5)
-    section.top_margin = section.bottom_margin = Cm(2)
+    section.left_margin = Cm(left)
+    section.right_margin = Cm(right)
+    section.top_margin = section.bottom_margin = Cm(vertical)
     normal = cast(ParagraphStyle, document.styles["Normal"])
-    normal.font.name = "Times New Roman"
-    normal.font.size = Pt(14)
-    normal.paragraph_format.line_spacing = 1.5
-    normal.paragraph_format.first_line_indent = Cm(1.25)
+    normal.font.name = font
+    normal.font.size = Pt(size)
+    normal.paragraph_format.line_spacing = spacing
+    normal.paragraph_format.first_line_indent = Cm(1.25 if template == "academic" else 0)
     normal.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     for name in ("Title", "Heading 1", "Heading 2", "List Bullet", "List Number"):
         style = cast(ParagraphStyle, document.styles[name])
-        style.font.name = "Times New Roman"
+        style.font.name = font
         style.paragraph_format.first_line_indent = Cm(0)
     footer = section.footer.paragraphs[0]
     footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -70,9 +82,11 @@ def export(
     title: str,
     segments: list[Segment],
     analysis: Analysis | None,
+    *,
+    template: str = "academic",
 ) -> None:
     title = safe_text(title)
-    full = academic_document()
+    full = formatted_document(template)
     full.add_heading(title, 0)
     full.add_heading("Полный текст лекции", 1)
     transcript = []
@@ -82,7 +96,7 @@ def export(
         who = f"{item.speaker}: " if item.speaker else ""
         line = prefix + who + item.text
         transcript.append(line)
-        full.add_paragraph(safe_text(line))
+        add_math_text(full.add_paragraph(), safe_text(line))
         if item.end > item.start:
             subtitles.append(
                 f"{len(subtitles) + 1}\n{timestamp(item.start, ms=True)} --> "
@@ -97,7 +111,7 @@ def export(
     write_json(folder / "transcript.json", [item.model_dump(mode="json") for item in segments])
     if analysis is None:
         return
-    summary = academic_document()
+    summary = formatted_document(template)
     summary.add_heading(title, 0)
     for heading, items in (
         ("Краткий конспект", analysis.summary),
@@ -105,9 +119,9 @@ def export(
     ):
         summary.add_heading(heading, 1)
         for point in items:
-            summary.add_paragraph(safe_text(point), style="List Bullet")
+            add_math_text(summary.add_paragraph(style="List Bullet"), safe_text(point))
     summary.save(str(folder / "02_Конспект_лекции.docx"))
-    tasks = academic_document()
+    tasks = formatted_document(template)
     tasks.add_heading(title, 0)
     tasks.add_heading("Задания преподавателя", 1)
     tasks.add_paragraph(
@@ -117,7 +131,7 @@ def export(
         tasks.add_paragraph("Анализ не выделил фрагментов с заданиями.")
     for task in analysis.assignments:
         tasks.add_heading(safe_text(task.title), 2)
-        tasks.add_paragraph(safe_text(task.requirements))
+        add_math_text(tasks.add_paragraph(), safe_text(task.requirements))
         tasks.add_paragraph("Срок сдачи: " + safe_text(task.deadline or "не указан"))
         timed = task.end > task.start or task.source_kind == "slide"
         label = f"[{timestamp(task.start)}] " if timed else ""
@@ -128,15 +142,17 @@ def export(
         if task.plan:
             tasks.add_paragraph("Предлагаемый план выполнения")
             for step in task.plan:
-                tasks.add_paragraph(safe_text(step), style="List Number")
+                add_math_text(tasks.add_paragraph(style="List Number"), safe_text(step))
     tasks.save(str(folder / "03_Задания_преподавателя.docx"))
     data = analysis.model_dump(mode="json")
     write_json(folder / "analysis.json", data)
     write_json(folder / "tasks.json", data["assignments"])
 
 
-def export_slides(folder: Path, title: str, slides: list[Slide]) -> None:
-    document = academic_document()
+def export_slides(
+    folder: Path, title: str, slides: list[Slide], *, template: str = "academic"
+) -> None:
+    document = formatted_document(template)
     document.add_heading(safe_text(title), 0)
     document.add_heading("Кадры лекции", 1)
     document.add_paragraph(
@@ -151,7 +167,7 @@ def export_slides(folder: Path, title: str, slides: list[Slide]) -> None:
         document.add_heading(timestamp(slide.start), 2)
         document.add_picture(str(path), width=Cm(15))
         if slide.text.strip():
-            document.add_paragraph(safe_text(slide.text))
+            add_math_text(document.add_paragraph(), safe_text(slide.text))
         index.append(
             {
                 "start": slide.start,

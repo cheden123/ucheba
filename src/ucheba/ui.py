@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import sys
 from bisect import bisect_right
+from collections.abc import Callable
+from importlib.metadata import PackageNotFoundError, version
 from math import isfinite
 from pathlib import Path
 from stat import S_ISREG
@@ -55,6 +57,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import updates
 from .analysis import OpenRouterError
 from .documents import timestamp
 from .imports import IMPORTS, MEDIA, load_transcript
@@ -64,7 +67,7 @@ from .queue import Job, QueueStore
 from .slides import SlideError
 from .speakers import save_review
 from .transcription import TranscriptionError
-from .updates import Update, UpdateError, check_update, download_update
+from .updates import Update, UpdateError
 
 KEY_SERVICE = "UchebaAI"
 KEY_ACCOUNT = "OpenRouter"
@@ -81,6 +84,12 @@ THEMES = {
     "Системная": Qt.ColorScheme.Unknown,
     "Светлая": Qt.ColorScheme.Light,
     "Тёмная": Qt.ColorScheme.Dark,
+}
+DOCUMENT_TEMPLATES = {
+    "academic": "Академический",
+    "standard": "Стандартный",
+    "compact": "Компактный",
+    "modern": "Современный",
 }
 
 
@@ -153,18 +162,19 @@ class DirectoryScan(Thread):
 
 
 class UpdateThread(QThread):
-    def __init__(self, parent: QWidget, update: Update | None, target: Path) -> None:
+    def __init__(
+        self,
+        parent: QWidget,
+        action: Callable[[], Update | updates.VerifiedInstaller | Path | None],
+    ) -> None:
         super().__init__(parent)
-        self.update = update
-        self.target = target
-        self.response: Update | Path | None = None
+        self.action = action
+        self.response: Update | updates.VerifiedInstaller | Path | None = None
         self.error = ""
 
     def run(self) -> None:
         try:
-            self.response = (
-                check_update() if self.update is None else download_update(self.update, self.target)
-            )
+            self.response = self.action()
         except UpdateError as exc:
             self.error = str(exc)
         except Exception:
@@ -196,18 +206,38 @@ class UpdateDialog(QDialog):
         super().__init__(window)
         self.main_window = window
         self.available_update: Update | None = None
-        self.installer: Path | None = None
+        self.installer: updates.VerifiedInstaller | None = None
         self.worker: UpdateThread | None = None
+        self.install_confirmed = False
+        self.resume_queue_on_failure = False
+        self.is_installed = installed_copy()
+        try:
+            self.current_version: str | None = version("ucheba-ai")
+        except PackageNotFoundError:
+            self.current_version = None
         self.setWindowTitle("Обновления")
-        self.resize(560, 360)
+        self.resize(650, 390)
         layout = QVBoxLayout(self)
-        self.status = QLabel()
+        layout.addWidget(QLabel(f"Текущая версия · {self.current_version or 'не определена'}"))
+        source_row = QHBoxLayout()
+        self.check_button = QPushButton("Проверить GitHub")
+        self.check_button.clicked.connect(self.check_online)
+        source_row.addWidget(self.check_button)
+        self.local_button = QPushButton("Проверить папку с обновлением…")
+        self.local_button.clicked.connect(self.select_local)
+        source_row.addWidget(self.local_button)
+        source_row.addStretch()
+        layout.addLayout(source_row)
+        self.status = QLabel(
+            "Выберите папку с установщиком и SHA256SUMS.txt или проверьте выпуски GitHub."
+        )
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
         self.notes = QPlainTextEdit()
         self.notes.setReadOnly(True)
         self.notes.setAccessibleName("Что изменилось в новой версии")
+        self.notes.setPlaceholderText("Изменения из выпуска GitHub появятся здесь.")
         layout.addWidget(self.notes, 1)
         row = QHBoxLayout()
         self.release_button = QPushButton("Открыть выпуск")
@@ -216,24 +246,35 @@ class UpdateDialog(QDialog):
         self.download_button = QPushButton("Загрузить установщик")
         self.download_button.clicked.connect(self.start_download)
         row.addWidget(self.download_button)
+        self.folder_button = QPushButton("Открыть папку")
+        self.folder_button.clicked.connect(self.open_verified_folder)
+        row.addWidget(self.folder_button)
         self.install_button = QPushButton("Установить…")
         self.install_button.clicked.connect(self.start_install)
         row.addWidget(self.install_button)
+        self.install_button.setVisible(self.is_installed)
+        row.addStretch()
         self.close_button = QPushButton("Закрыть")
         self.close_button.clicked.connect(self.reject)
         row.addWidget(self.close_button)
         layout.addLayout(row)
-        self.start_request(None)
+        if not self.is_installed:
+            portable_note = QLabel(
+                "Портативную версию обновляйте вручную из нового архива на странице выпуска. "
+                "Установленная версия может запускать обновление из этого окна."
+            )
+            portable_note.setWordWrap(True)
+            layout.addWidget(portable_note)
+        self.update_buttons()
 
-    def start_request(self, update: Update | None) -> None:
-        data = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation)
-        worker = UpdateThread(self, update, Path(data) / "Updates")
+    def start_request(
+        self, action: Callable[[], Update | updates.VerifiedInstaller | Path | None], message: str
+    ) -> None:
+        worker = UpdateThread(self, action)
         self.worker = worker
         worker.finished.connect(self.request_finished)
         worker.finished.connect(worker.deleteLater)
-        self.status.setText(
-            "Проверка версии на GitHub…" if update is None else "Загрузка и проверка установщика…"
-        )
+        self.status.setText(message)
         self.update_buttons()
         worker.start()
 
@@ -243,63 +284,145 @@ class UpdateDialog(QDialog):
             return
         self.worker = None
         result = worker.response
-        if worker.error:
+        if self.install_confirmed:
+            self.install_confirmed = False
+            if isinstance(result, Path) and not worker.error and self.launch_installer(result):
+                return
+            if worker.error:
+                self.installer = None
+                self.status.setText(worker.error)
+            self.restore_queue()
+        elif worker.error:
             self.status.setText(worker.error)
         elif isinstance(result, Update):
             self.available_update = result
             self.notes.setPlainText(result.notes)
             size = f"{result.installer_size / 1024**2:.1f}".replace(".", ",")
             self.status.setText(f"Доступна версия {result.version}. Размер установщика {size} МБ.")
-        elif isinstance(result, Path):
+        elif isinstance(result, updates.VerifiedInstaller):
             self.installer = result
-            self.status.setText(f"Установщик проверен и сохранён в {result}")
+            signature = "проверена" if result.signed else "отсутствует"
+            self.status.setText(
+                f"Проверен установщик версии {result.version}. Подпись издателя · {signature}.\n{result.path}"
+            )
         else:
-            self.status.setText("Новых версий пока нет.")
+            self.status.setText("Установлена актуальная версия.")
         self.update_buttons()
 
     def update_buttons(self) -> None:
         idle = self.worker is None
+        has_version = self.current_version is not None
+        self.check_button.setEnabled(idle and has_version)
+        self.local_button.setEnabled(idle and has_version)
         self.close_button.setEnabled(idle)
         self.release_button.setEnabled(self.available_update is not None)
-        self.download_button.setEnabled(
-            idle and self.available_update is not None and self.installer is None
+        self.download_button.setEnabled(idle and self.available_update is not None)
+        self.folder_button.setEnabled(idle and self.installer is not None)
+        self.install_button.setEnabled(idle and self.installer is not None and self.is_installed)
+
+    def check_online(self) -> None:
+        if self.worker is None and self.current_version is not None:
+            self.available_update = None
+            self.notes.clear()
+            self.start_request(
+                lambda: updates.check_update(self.current_version, require_public=True),
+                "Проверка версии на GitHub…",
+            )
+
+    @staticmethod
+    def private_update_dir() -> Path:
+        directory = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.AppLocalDataLocation
         )
-        self.install_button.setEnabled(idle and self.installer is not None and installed_copy())
+        if not directory:
+            raise UpdateError("Не удалось определить личную папку обновлений Windows.")
+        return Path(directory) / "Updates"
+
+    def select_local(self) -> None:
+        if self.worker is not None or self.current_version is None:
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Папка с установщиком и SHA256SUMS.txt")
+        if folder:
+            self.installer = None
+            self.start_request(
+                lambda: updates.stage_offline_update(
+                    Path(folder), self.private_update_dir(), self.current_version
+                ),
+                "Проверка локального установщика…",
+            )
 
     def open_release(self) -> None:
         if self.available_update:
             QDesktopServices.openUrl(QUrl(self.available_update.release_url))
 
+    def open_verified_folder(self) -> None:
+        if self.installer:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.installer.path.parent)))
+
     def start_download(self) -> None:
-        if self.available_update and self.worker is None and self.installer is None:
-            self.start_request(self.available_update)
+        if (release := self.available_update) and self.worker is None:
+            self.installer = None
+            self.start_request(
+                lambda: updates.stage_online_update(release, self.private_update_dir()),
+                "Загрузка и проверка установщика…",
+            )
 
     def start_install(self) -> None:
-        if self.installer is None or not installed_copy():
+        if (installer := self.installer) is None or self.worker is not None or not installed_copy():
             return
         if self.main_window.worker:
             self.status.setText("Дождитесь завершения текущей обработки перед установкой.")
             return
-        was_paused = self.main_window.paused
-        if not was_paused:
+        self.resume_queue_on_failure = not self.main_window.paused
+        if self.resume_queue_on_failure:
             self.main_window.toggle_pause()
-        confirmed = QMessageBox.question(
-            self,
-            "Установка обновления",
-            "Закрыть «Учёба AI» и запустить проверенный установщик?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if confirmed == QMessageBox.StandardButton.Yes:
-            started, _pid = QProcess.startDetached(
-                str(self.installer), [], str(self.installer.parent)
+        if self.confirm_install(installer):
+            self.install_confirmed = True
+            self.start_request(
+                lambda: updates.verify_installer_for_launch(installer),
+                "Повторная проверка установщика…",
             )
-            if started:
-                self.accept()
-                self.main_window.close()
-                return
+        else:
+            self.restore_queue()
+
+    def confirm_install(self, installer: updates.VerifiedInstaller) -> bool:
+        detail = "Приложение повторно проверит файл перед запуском."
+        if not installer.signed:
+            detail += (
+                "\n\nSHA-256 проверяет только целостность файла. У этого установщика отсутствует "
+                "цифровая подпись. Продолжайте, если получили комплект из доверенного источника. "
+                "Возможны предупреждения Windows SmartScreen."
+            )
+        confirmation = QMessageBox(
+            QMessageBox.Icon.Question,
+            "Установка обновления",
+            f"Закрыть «Учёба AI» и установить обновление {installer.version}?\n\n{detail}",
+            parent=self,
+        )
+        confirm = confirmation.addButton("Установить", QMessageBox.ButtonRole.AcceptRole)
+        cancel = confirmation.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+        confirmation.setDefaultButton(cancel)
+        confirmation.exec()
+        return confirmation.clickedButton() == confirm
+
+    def launch_installer(self, path: Path) -> bool:
+        if self.main_window.worker or not installed_copy():
+            self.status.setText(
+                "Установка доступна после завершения обработки в установленной версии."
+            )
+            return False
+        started, _pid = QProcess.startDetached(str(path), [], str(path.parent))
+        if not started:
             self.status.setText("Не удалось запустить установщик.")
-        if not was_paused:
+            return False
+        self.resume_queue_on_failure = False
+        self.accept()
+        self.main_window.close()
+        return True
+
+    def restore_queue(self) -> None:
+        if self.resume_queue_on_failure:
+            self.resume_queue_on_failure = False
             self.main_window.toggle_pause()
 
     def reject(self) -> None:
@@ -1062,6 +1185,11 @@ class MainWindow(QMainWindow):
         device.addItem("Автоматически", "auto")
         device.setCurrentIndex(max(device.findData(self.settings.value("device", "cpu")), 0))
         form.addRow("Устройство", device)
+        template = QComboBox()
+        for code, label in DOCUMENT_TEMPLATES.items():
+            template.addItem(label, code)
+        template.setCurrentIndex(max(template.findData(self.document_template()), 0))
+        form.addRow("Оформление Word", template)
         speaker_model = str(self.settings.value("speaker_model", "")).strip()
         use_speakers = QCheckBox("Разделить говорящих локальной моделью Community-1")
         media_selected = any(source.suffix.lower() in MEDIA for source in sources)
@@ -1124,6 +1252,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("output", str(target))
         self.settings.setValue("model", models.currentText())
         self.settings.setValue("device", device.currentData())
+        self.settings.setValue("template", template.currentData())
         unavailable = []
         for source in sources:
             try:
@@ -1133,6 +1262,7 @@ class MainWindow(QMainWindow):
                     model=models.currentText(),
                     device=device.currentData(),
                     cloud=cloud.isChecked(),
+                    template=template.currentData(),
                     slides=slides.isChecked() and source.suffix.lower() in VIDEO_EXTENSIONS,
                     speaker_model=(
                         Path(speaker_model)
@@ -1160,6 +1290,10 @@ class MainWindow(QMainWindow):
             QStandardPaths.StandardLocation.DocumentsLocation
         )
         return str(Path(documents) / "Учёба AI")
+
+    def document_template(self) -> str:
+        preset = str(self.settings.value("template", "academic"))
+        return preset if preset in DOCUMENT_TEMPLATES else "academic"
 
     def edit_settings(self) -> None:
         dialog = QDialog(self)
@@ -1301,6 +1435,7 @@ class MainWindow(QMainWindow):
                     model=str(self.settings.value("model", "small")),
                     device=str(self.settings.value("device", "cpu")),
                     cloud=False,
+                    template=self.document_template(),
                 )
             else:
                 seen[path] = (signature, since)

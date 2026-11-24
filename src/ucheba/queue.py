@@ -21,6 +21,7 @@ class Job:
     slides: bool = False
     speaker_model: Path | None = None
     state_dir: Path | None = None
+    template: str = "academic"
 
 
 def source_identity(path: Path) -> str:
@@ -54,6 +55,10 @@ class QueueStore:
             columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)")}
             for field, sql in (
                 ("source_identity", "ALTER TABLE jobs ADD COLUMN source_identity TEXT"),
+                (
+                    "template",
+                    "ALTER TABLE jobs ADD COLUMN template TEXT NOT NULL DEFAULT 'academic'",
+                ),
                 ("slides", "ALTER TABLE jobs ADD COLUMN slides INTEGER NOT NULL DEFAULT 0"),
                 ("speaker_model", "ALTER TABLE jobs ADD COLUMN speaker_model TEXT"),
             ):
@@ -85,6 +90,7 @@ class QueueStore:
             bool(row["slides"]),
             Path(row["speaker_model"]) if row["speaker_model"] else None,
             self.path.parent / "checkpoints",
+            row["template"],
         )
 
     def add(
@@ -97,13 +103,16 @@ class QueueStore:
         cloud: bool,
         slides: bool = False,
         speaker_model: Path | None = None,
+        template: str = "academic",
     ) -> Job:
+        if template not in {"academic", "standard", "compact", "modern"}:
+            raise ValueError("Неизвестный шаблон Word.")
         job_id = uuid4().hex
         identity = source_identity(source) if cloud else None
         with self._connect() as db:
             db.execute(
-                "INSERT INTO jobs(id, source, output, model, device, cloud, status, source_identity, slides, speaker_model) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)",
+                "INSERT INTO jobs(id, source, output, model, device, cloud, status, source_identity, slides, speaker_model, template) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
                 (
                     job_id,
                     str(source.absolute()),
@@ -114,6 +123,7 @@ class QueueStore:
                     identity,
                     slides,
                     str(speaker_model.absolute()) if speaker_model else None,
+                    template,
                 ),
             )
         return self.get(job_id)

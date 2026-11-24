@@ -107,7 +107,7 @@ def test_watched_folder_queues_only_stable_file_once(app, tmp_path: Path, monkey
 
 def test_slide_selection_reconfirms_cloud_consent(app, tmp_path: Path):
     from PySide6.QtCore import QSettings, QTimer
-    from PySide6.QtWidgets import QCheckBox, QDialog
+    from PySide6.QtWidgets import QCheckBox, QComboBox, QDialog
 
     from ucheba.ui import MainWindow
 
@@ -127,6 +127,10 @@ def test_slide_selection_reconfirms_cloud_consent(app, tmp_path: Path):
             boxes = dialog.findChildren(QCheckBox)
             cloud = next(box for box in boxes if box.text().startswith("Отправить"))
             slides = next(box for box in boxes if box.text().startswith("Извлечь слайды"))
+            preset = next(
+                box for box in dialog.findChildren(QComboBox) if box.findData("compact") >= 0
+            )
+            preset.setCurrentIndex(preset.findData("compact"))
             cloud.setChecked(True)
             slides.setChecked(True)
             observed["checked"] = cloud.isChecked()
@@ -140,6 +144,8 @@ def test_slide_selection_reconfirms_cloud_consent(app, tmp_path: Path):
     assert "текст с кадров" in observed["label"]
     (job,) = window.queue.list()
     assert job.slides and not job.cloud
+    assert job.template == "compact"
+    assert window.document_template() == "compact"
     window.close()
 
 
@@ -226,3 +232,66 @@ def test_assignments_navigates_to_slide_with_point_timestamp(app, tmp_path: Path
     dialog.open_task()
     assert calls == [(job, 10)]
     dialog.reject()
+
+
+def test_update_dialog_rechecks_local_installer_after_confirmation(
+    app, tmp_path: Path, monkeypatch
+):
+    from PySide6.QtCore import QSettings
+
+    from ucheba import ui, updates
+
+    source = tmp_path / "Комплект"
+    private = tmp_path / "Профиль" / "Updates"
+    installer = updates.VerifiedInstaller(
+        private / "release" / "UchebaAI-Setup-x64.exe", "9.0.0", "a" * 64, 100, False
+    )
+    monkeypatch.setattr(ui, "installed_copy", lambda: True)
+    monkeypatch.setattr(ui.QFileDialog, "getExistingDirectory", lambda *_args: str(source))
+    monkeypatch.setattr(ui.UpdateDialog, "private_update_dir", staticmethod(lambda: private))
+    events = []
+
+    def stage(selected, directory, current):
+        events.append(("stage", selected, directory, current))
+        return installer
+
+    def recheck(verified):
+        events.append(("recheck", verified, window.paused))
+        raise updates.UpdateError("Контрольная сумма подготовленного установщика изменилась.")
+
+    monkeypatch.setattr(updates, "stage_offline_update", stage)
+    monkeypatch.setattr(updates, "verify_installer_for_launch", recheck)
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = ui.MainWindow(tmp_path / "queue.sqlite3", settings)
+    dialog = ui.UpdateDialog(window)
+
+    def confirm(verified):
+        events.append(("confirm", verified))
+        return True
+
+    monkeypatch.setattr(dialog, "confirm_install", confirm)
+    monkeypatch.setattr(dialog, "launch_installer", lambda path: events.append(("launch", path)))
+
+    def settle() -> None:
+        worker = dialog.worker
+        assert worker is not None and worker.wait(10_000)
+        app.processEvents()
+        assert dialog.worker is None
+
+    dialog.select_local()
+    settle()
+    assert dialog.installer == installer
+    assert str(installer.path) in dialog.status.text()
+    assert "отсутствует" in dialog.status.text()
+    dialog.start_install()
+    settle()
+    assert events == [
+        ("stage", source, private, dialog.current_version),
+        ("confirm", installer),
+        ("recheck", installer, True),
+    ]
+    assert dialog.installer is None
+    assert "Контрольная сумма" in dialog.status.text()
+    assert not window.paused
+    dialog.reject()
+    window.close()

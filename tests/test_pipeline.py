@@ -152,3 +152,22 @@ def test_cloud_ignores_untrusted_checkpoint_on_results_share(tmp_path: Path, mon
     monkeypatch.setattr("ucheba.analysis.analyze", fake_analysis)
     output = process(job, "fake-key", lambda _: None, lambda: False)
     assert (output / "02_Конспект_лекции.docx").is_file()
+
+
+def test_selected_word_preset_survives_queue_and_export(tmp_path: Path) -> None:
+    source = tmp_path / "lecture.txt"
+    source.write_text("Академический конспект", encoding="utf-8")
+    queue = QueueStore(tmp_path / "queue.db")
+    job = queue.add(
+        source,
+        tmp_path / "results",
+        model="base",
+        device="cpu",
+        cloud=False,
+        template="compact",
+    )
+    assert queue.get(job.id).template == "compact"
+    folder = process(job, None, lambda _: None, lambda: False)
+    doc = Document(str(folder / "01_Полный_текст_лекции.docx"))
+    assert doc.styles["Normal"].font.name == "Calibri"
+    assert doc.styles["Normal"].font.size.pt == 10
