@@ -1,0 +1,59 @@
+name: Проверка обновления 0.3.0 → 0.4.0
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upgrade:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: 83ee17b56e69639200080ba2a3b8c28d0bb6a742
+          path: previous
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Собрать 0.3.0 только на тестовом раннере
+        working-directory: previous
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pip install ".[build]"
+          ./scripts/build-windows.ps1 -ExpectedTag v0.3.0
+      - name: Пройти проверку GitHub в интерфейсе и установить 0.4.0
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{9A4F80D8-9AD1-4B56-955B-4F261461413C}_is1'
+          if (Test-Path -LiteralPath $key) { throw 'Среда проверки уже содержит установку.' }
+          $target = Join-Path $env:RUNNER_TEMP ('ucheba-upgrade-' + [guid]::NewGuid())
+          $env:UCHEBA_TEST_INSTALLATION = $target
+          $env:UCHEBA_TEST_WORK = Join-Path $env:RUNNER_TEMP ('ucheba-qa-' + [guid]::NewGuid())
+          $env:PYTHONPATH = Join-Path $PWD 'previous/src'
+          $previous = (Resolve-Path previous/release/UchebaAI-Setup-x64.exe).Path
+          try {
+            $opts = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-', "/DIR=""$target""")
+            $setup = Start-Process -FilePath $previous -ArgumentList $opts -WindowStyle Hidden -Wait -PassThru
+            if ($setup.ExitCode -ne 0) { throw "Установка 0.3.0 завершилась с кодом $($setup.ExitCode)." }
+            $old = Start-Process -FilePath (Join-Path $target 'UchebaAI.exe') -ArgumentList '--smoke-test' -WindowStyle Hidden -Wait -PassThru
+            if ($old.ExitCode -ne 0) { throw 'Не запускается установленная 0.3.0.' }
+            python scripts/check-github-upgrade.py
+          } finally {
+            $uninstaller = Join-Path $target 'unins000.exe'
+            if (Test-Path -LiteralPath $uninstaller) {
+              $removed = Start-Process -FilePath $uninstaller -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -WindowStyle Hidden -Wait -PassThru
+              if ($removed.ExitCode -ne 0) { throw 'Не удалось удалить тестовую установку.' }
+            }
+          }
