@@ -111,8 +111,9 @@ def process(
         raise ValueError("Формат файла не поддерживается")
     try:
         job.output.mkdir(parents=True, exist_ok=True)
-        with TemporaryFile(dir=job.output):
-            pass
+        with TemporaryDirectory(prefix=".ucheba-write-check-", dir=job.output) as probe:
+            with TemporaryFile(dir=probe) as stream:
+                stream.write(b"ok")
     except OSError as exc:
         raise ValueError(
             "Папка результатов недоступна для записи. Проверьте путь и права доступа."
