@@ -8,6 +8,8 @@ from tempfile import TemporaryDirectory
 
 
 def _smoke_test() -> int:
+    import ssl
+
     from faster_whisper import WhisperModel  # noqa: F401
 
     from ucheba import builtin_diarization
@@ -20,6 +22,7 @@ def _smoke_test() -> int:
         import sherpa_onnx  # noqa: F401
 
         current_version()
+        ssl.create_default_context()
 
     with TemporaryDirectory() as directory:
         if getattr(sys, "frozen", False):

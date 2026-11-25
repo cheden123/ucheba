@@ -11,6 +11,14 @@ Push-Location (Join-Path $PSScriptRoot '..')
 try {
     $python = python -c "import json, sys; print(json.dumps(sys.executable))" | ConvertFrom-Json
     & $python -c "import struct, sys; assert sys.platform == 'win32' and struct.calcsize('P') == 8"
+    $sslDir = & $python -c "import _ssl, json; from pathlib import Path; print(json.dumps(str(Path(_ssl.__file__).parent)))" | ConvertFrom-Json
+    $openssl = foreach ($pattern in @('libcrypto-3*.dll', 'libssl-3*.dll')) {
+        $dll = @(Get-ChildItem -LiteralPath $sslDir -File -Filter $pattern)
+        if ($dll.Count -ne 1) {
+            throw "Не удалось однозначно определить DLL OpenSSL ($pattern) из установленного Python."
+        }
+        $dll[0].FullName
+    }
     $version = & $python -c "from importlib.metadata import version; print(version('ucheba-ai'))"
     if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
         throw 'Версия пакета должна иметь вид MAJOR.MINOR.PATCH.'
@@ -43,6 +51,10 @@ try {
         '--exclude-module', 'mypy', '--exclude-module', 'pytest', '--exclude-module', 'pip',
         '--exclude-module', 'pip_audit', '--exclude-module', 'ruff'
     )
+    # Automatic discovery can pick an incompatible OpenSSL from System32.
+    foreach ($dll in $openssl) {
+        $arguments += @('--add-binary', "${dll}:.")
+    }
     if ($DownloadFFmpegOnFirstUse) {
         $overlay = Join-Path $build.FullName 'frozen-overlay-public'
         & $python 'scripts/prepare-public-whisper.py' $overlay
@@ -68,6 +80,12 @@ try {
     }
 
     $package = Join-Path $dist 'UchebaAI'
+    foreach ($dll in $openssl) {
+        $bundled = Join-Path $package "_internal/$(Split-Path -Leaf $dll)"
+        if ((Get-FileHash -LiteralPath $bundled).Hash -ne (Get-FileHash -LiteralPath $dll).Hash) {
+            throw "В сборку попала несовместимая DLL OpenSSL: $bundled"
+        }
+    }
     if ($DownloadFFmpegOnFirstUse) {
         $optionalQt = @(
             '_internal/PySide6/plugins/platforminputcontexts/qtvirtualkeyboardplugin.dll',
@@ -95,6 +113,11 @@ try {
         }
     }
     & $python 'scripts/copy-notices.py' $package
+    $pythonBase = & $python -c "import json, sys; print(json.dumps(sys.base_prefix))" | ConvertFrom-Json
+    $pythonNotice = Join-Path $pythonBase 'LICENSE.txt'
+    Copy-Item -LiteralPath $pythonNotice -Destination (Join-Path $package 'licenses/Python-LICENSE.txt')
+    & $python -c "import ssl, sys; print('Python ' + sys.version.split()[0]); print(ssl.OPENSSL_VERSION)" |
+        Set-Content -LiteralPath (Join-Path $package 'licenses/Python-OpenSSL-versions.txt') -Encoding ascii
     Copy-Item -LiteralPath 'docs/THIRD-PARTY-SOURCES.md' -Destination $output.FullName -Force
     & "$PSScriptRoot/test-windows-package.ps1" -ApplicationDir $package
 

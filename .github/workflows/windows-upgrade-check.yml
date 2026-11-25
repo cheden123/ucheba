@@ -1,7 +1,23 @@
-name: Проверка обновления 0.3.0 → 0.4.0
+name: Проверка обновления через GitHub
 
 on:
   workflow_dispatch:
+    inputs:
+      previous_ref:
+        description: Полный SHA исходного коммита установленной версии
+        type: string
+        required: true
+        default: a10adb504401d1e74f2a61f968c88ef950b25356
+      previous_version:
+        description: Установленная версия
+        type: string
+        required: true
+        default: '0.4.1'
+      target_version:
+        description: Последняя стабильная версия на GitHub
+        type: string
+        required: true
+        default: '0.4.2'
 
 permissions:
   contents: read
@@ -13,42 +29,61 @@ jobs:
     env:
       QT_QPA_PLATFORM: offscreen
       PYTHONUTF8: '1'
+      UCHEBA_TEST_PREVIOUS: ${{ inputs.previous_version }}
+      UCHEBA_TEST_TARGET: ${{ inputs.target_version }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
+      - name: Проверить параметры
+        env:
+          PREVIOUS_REF: ${{ inputs.previous_ref }}
+        run: |
+          if ($env:PREVIOUS_REF -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'Укажите полный SHA исходного коммита.'
+          }
+          $versionPattern = '^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$'
+          if ($env:UCHEBA_TEST_PREVIOUS -cnotmatch $versionPattern -or
+              $env:UCHEBA_TEST_TARGET -cnotmatch $versionPattern -or
+              [version]$env:UCHEBA_TEST_TARGET -le [version]$env:UCHEBA_TEST_PREVIOUS) {
+            throw 'Укажите возрастающую пару версий в формате MAJOR.MINOR.PATCH.'
+          }
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: 83ee17b56e69639200080ba2a3b8c28d0bb6a742
+          ref: ${{ inputs.previous_ref }}
           path: previous
           persist-credentials: false
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
           python-version: '3.12'
           architecture: x64
-      - name: Собрать 0.3.0 только на тестовом раннере
+      - name: Собрать установленную версию только на тестовом раннере
         working-directory: previous
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
           python -m pip install ".[build]"
-          ./scripts/build-windows.ps1 -ExpectedTag v0.3.0
-      - name: Пройти проверку GitHub в интерфейсе и установить 0.4.0
+          ./scripts/build-windows.ps1 -ExpectedTag "v$env:UCHEBA_TEST_PREVIOUS"
+      - name: Проверить диалог обновления и установку выпуска
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{9A4F80D8-9AD1-4B56-955B-4F261461413C}_is1'
-          if (Test-Path -LiteralPath $key) { throw 'Среда проверки уже содержит установку.' }
+          $key = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{9A4F80D8-9AD1-4B56-955B-4F261461413C}_is1'
+          foreach ($hive in @('HKCU:', 'HKLM:')) {
+            if (Test-Path -LiteralPath (Join-Path $hive $key)) {
+              throw 'Среда проверки уже содержит установку.'
+            }
+          }
           $target = Join-Path $env:RUNNER_TEMP ('ucheba-upgrade-' + [guid]::NewGuid())
           $env:UCHEBA_TEST_INSTALLATION = $target
           $env:UCHEBA_TEST_WORK = Join-Path $env:RUNNER_TEMP ('ucheba-qa-' + [guid]::NewGuid())
           $env:PYTHONPATH = Join-Path $PWD 'previous/src'
           $previous = (Resolve-Path previous/release/UchebaAI-Setup-x64.exe).Path
           try {
-            $opts = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-', "/DIR=""$target""")
+            $opts = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-', '/MERGETASKS="!desktopicon"', "/DIR=""$target""")
             $setup = Start-Process -FilePath $previous -ArgumentList $opts -WindowStyle Hidden -Wait -PassThru
-            if ($setup.ExitCode -ne 0) { throw "Установка 0.3.0 завершилась с кодом $($setup.ExitCode)." }
+            if ($setup.ExitCode -ne 0) { throw "Установка исходной версии завершилась с кодом $($setup.ExitCode)." }
             $old = Start-Process -FilePath (Join-Path $target 'UchebaAI.exe') -ArgumentList '--smoke-test' -WindowStyle Hidden -Wait -PassThru
-            if ($old.ExitCode -ne 0) { throw 'Не запускается установленная 0.3.0.' }
+            if ($old.ExitCode -ne 0) { throw 'Не запускается исходная установленная версия.' }
             python scripts/check-github-upgrade.py
           } finally {
             $uninstaller = Join-Path $target 'unins000.exe'

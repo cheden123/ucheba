@@ -241,8 +241,10 @@ def transcribe(
     cancelled: Callable[[], bool] = lambda: False,
     *,
     glossary: str = "",
+    stage: Callable[[str], None] = lambda _stage: None,
 ) -> list[Segment]:
     """Распознать запись, сохраняя результат после каждого пятиминутного интервала."""
+    stage("probe_media")
     _continue(cancelled)
     source = source.resolve()
     if not source.is_file():
@@ -267,8 +269,10 @@ def transcribe(
     }
     first_chunk, result = _load_checkpoint(checkpoint, signature, chunks)
     if first_chunk == chunks:
+        stage("transcribe")
         return result
     ffmpeg = _tool("ffmpeg")
+    stage("load_whisper")
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:
@@ -280,6 +284,10 @@ def transcribe(
         recognizer = WhisperModel(
             alias, device=device, compute_type="int8" if device == "cpu" else "auto"
         )
+    except ImportError as exc:
+        raise TranscriptionError(
+            "Не удалось загрузить библиотеку Whisper. Переустановите приложение из новой сборки."
+        ) from exc
     except (OSError, RuntimeError, ValueError) as exc:
         raise TranscriptionError(
             "Не удалось загрузить модель Whisper. Проверьте подключение, место на диске "
@@ -294,9 +302,11 @@ def transcribe(
             stop = min(start + _CHUNK_SECONDS, duration)
             extract_start = max(0, start - _OVERLAP_SECONDS)
             extract_stop = min(duration, stop + _OVERLAP_SECONDS)
+            stage("convert")
             _extract_audio(
                 ffmpeg, source, audio, extract_start, extract_stop - extract_start, cancelled
             )
+            stage("transcribe")
             try:
                 samples = _read_pcm(audio)
                 if samples.size:

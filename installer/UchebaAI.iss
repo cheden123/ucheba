@@ -45,6 +45,7 @@ Type: filesandordirs; Name: "{app}\_internal\ucheba_ai-0.1.0.dist-info"; Check: 
 Type: filesandordirs; Name: "{app}\_internal\ucheba_ai-0.2.0.dist-info"; Check: SafeStaleMetadata('0.2.0')
 Type: filesandordirs; Name: "{app}\_internal\ucheba_ai-0.3.0.dist-info"; Check: SafeStaleMetadata('0.3.0')
 Type: filesandordirs; Name: "{app}\_internal\ucheba_ai-0.4.0.dist-info"; Check: SafeStaleMetadata('0.4.0')
+Type: filesandordirs; Name: "{app}\_internal\ucheba_ai-0.4.1.dist-info"; Check: SafeStaleMetadata('0.4.1')
 #ifdef ExternalMedia
 Type: files; Name: "{app}\ffmpeg.exe"
 Type: files; Name: "{app}\ffprobe.exe"

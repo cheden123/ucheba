@@ -2,11 +2,18 @@
 
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError
+from json import JSONDecodeError
 import platform
 from pathlib import Path
 import re
+from socket import gaierror
 import sqlite3
+from subprocess import CalledProcessError, TimeoutExpired
 from tempfile import NamedTemporaryFile
+from zipfile import BadZipFile
+
+import httpx
+from keyring import errors as keyring_errors
 
 from .app_version import current_version
 from .queue import Job, QueueStore
@@ -17,6 +24,10 @@ EVENTS = {
     "job_failed": "Задание завершилось ошибкой",
     "job_succeeded": "Задание выполнено",
     "job_cancelled": "Задание отменено",
+    "stage_start": "Начат этап",
+    "stage_succeeded": "Этап завершён",
+    "stage_failed": "Ошибка на этапе",
+    "stage_note": "Событие на этапе",
     "speaker_candidate": "Предложен вероятный преподаватель",
     "speaker_unresolved": "Недостаточно признаков для выбора преподавателя",
     "speaker_warning": "Автоматическое разделение голосов не завершено",
@@ -24,6 +35,8 @@ EVENTS = {
     "key_check_failed": "Проверка ключа OpenRouter завершилась ошибкой",
     "update_check_ok": "Проверка обновлений завершена",
     "update_check_failed": "Проверка обновлений завершилась ошибкой",
+    "update_download_failed": "Не удалось подготовить установщик обновления",
+    "update_launch_failed": "Не удалось запустить установщик обновления",
     "update_ready": "Установщик проверен",
     "update_launched": "Установщик запущен",
 }
@@ -35,7 +48,162 @@ REASONS = {
     "validation": "Проверка параметров или входных данных",
     "unknown": "Необработанное исключение",
 }
+STAGES = {
+    "prepare": "Подготовка задания",
+    "read_key": "Чтение ключа OpenRouter",
+    "read_transcript": "Чтение готовой расшифровки",
+    "probe_media": "Проверка записи",
+    "convert": "Подготовка аудио",
+    "load_whisper": "Загрузка модели Whisper",
+    "transcribe": "Распознавание речи",
+    "save_transcript": "Сохранение расшифровки",
+    "speakers": "Разделение говорящих",
+    "slides": "Извлечение слайдов",
+    "analyze": "Анализ лекции",
+    "save": "Сохранение результатов",
+    "openrouter_key": "Проверка ключа OpenRouter",
+    "update_check": "Проверка обновлений",
+    "update_download": "Подготовка установщика",
+    "update_launch": "Запуск установщика",
+}
+CODES = {
+    "cloud_unavailable": "Облачный анализ недоступен",
+    "cuda_fallback": "Распознавание продолжено на CPU",
+    "no_speech": "Речь в записи не обнаружена",
+}
 _LIMIT = 2000
+_OS_ERROR_TYPES = (
+    OSError,
+    BlockingIOError,
+    BrokenPipeError,
+    ConnectionAbortedError,
+    ConnectionError,
+    ConnectionRefusedError,
+    ConnectionResetError,
+    FileExistsError,
+    FileNotFoundError,
+    InterruptedError,
+    IsADirectoryError,
+    NotADirectoryError,
+    PermissionError,
+    TimeoutError,
+)
+_ERROR_TYPES: tuple[tuple[type[BaseException], str], ...] = (
+    *(
+        (cls, f"builtins.{cls.__name__}")
+        for cls in (
+            *_OS_ERROR_TYPES,
+            AttributeError,
+            ImportError,
+            KeyError,
+            MemoryError,
+            ModuleNotFoundError,
+            OverflowError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            UnicodeDecodeError,
+            UnicodeEncodeError,
+        )
+    ),
+    *(
+        (cls, f"sqlite3.{cls.__name__}")
+        for cls in (
+            sqlite3.Error,
+            sqlite3.DatabaseError,
+            sqlite3.IntegrityError,
+            sqlite3.OperationalError,
+        )
+    ),
+    (JSONDecodeError, "json.JSONDecodeError"),
+    (BadZipFile, "zipfile.BadZipFile"),
+    (CalledProcessError, "subprocess.CalledProcessError"),
+    (TimeoutExpired, "subprocess.TimeoutExpired"),
+    (gaierror, "socket.gaierror"),
+    *(
+        (cls, f"keyring.errors.{cls.__name__}")
+        for cls in (
+            keyring_errors.KeyringError,
+            keyring_errors.InitError,
+            keyring_errors.KeyringLocked,
+            keyring_errors.NoKeyringError,
+        )
+    ),
+    *(
+        (cls, f"httpx.{cls.__name__}")
+        for cls in (
+            httpx.HTTPError,
+            httpx.HTTPStatusError,
+            httpx.InvalidURL,
+            httpx.RequestError,
+            httpx.TransportError,
+            httpx.TimeoutException,
+            httpx.NetworkError,
+            httpx.ProtocolError,
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadError,
+            httpx.ReadTimeout,
+            httpx.WriteError,
+            httpx.WriteTimeout,
+            httpx.PoolTimeout,
+            httpx.RemoteProtocolError,
+            httpx.LocalProtocolError,
+            httpx.ProxyError,
+            httpx.TooManyRedirects,
+            httpx.UnsupportedProtocol,
+            httpx.DecodingError,
+        )
+    ),
+)
+
+
+def stage_label(stage: str | None) -> str:
+    if type(stage) is str:
+        return STAGES.get(stage, "Неизвестный этап")
+    return "Неизвестный этап"
+
+
+def _error_details(error: BaseException, status: int | None) -> tuple[str, int | None]:
+    from .analysis import OpenRouterError
+    from .ffmpeg_download import FFmpegDownloadError
+    from .pipeline import NoSpeechError
+    from .slides import SlideError
+    from .transcription import TranscriptionError
+    from .updates import NoPublicRelease, UpdateError
+
+    allowed = (
+        *_ERROR_TYPES,
+        (OpenRouterError, "ucheba.analysis.OpenRouterError"),
+        (FFmpegDownloadError, "ucheba.ffmpeg_download.FFmpegDownloadError"),
+        (NoSpeechError, "ucheba.pipeline.NoSpeechError"),
+        (SlideError, "ucheba.slides.SlideError"),
+        (TranscriptionError, "ucheba.transcription.TranscriptionError"),
+        (UpdateError, "ucheba.updates.UpdateError"),
+        (NoPublicRelease, "ucheba.updates.NoPublicRelease"),
+    )
+    chain: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen and len(chain) < 4:
+        seen.add(id(current))
+        cls = type(current)
+        parts = [next((name for known, name in allowed if cls is known), "Неизвестный тип")]
+        if cls is gaierror or any(cls is known for known in _OS_ERROR_TYPES):
+            for key, minimum, maximum in (("errno", -4095, 4095), ("winerror", 0, 0xFFFFFFFF)):
+                value = getattr(current, key, None)
+                if type(value) is int and minimum <= value <= maximum:
+                    parts.append(f"{key}={value}")
+        if status is None and type(current) is httpx.HTTPStatusError:
+            response = vars(current).get("response")
+            if type(response) is httpx.Response:
+                status = response.status_code
+        chain.append(" ".join(parts))
+        # Даже когда обёртка скрывает traceback, журналу доступен безопасный тип причины.
+        descriptors = vars(BaseException)
+        cause = descriptors["__cause__"].__get__(current)
+        current = cause if cause is not None else descriptors["__context__"].__get__(current)
+    return f" · ошибка {' ← '.join(chain)}", status
 
 
 def classify_failure(error: Exception) -> str:
@@ -64,9 +232,17 @@ def _table(db: sqlite3.Connection) -> None:
 
 
 def record_event(
-    queue: QueueStore, event: str, *, job: Job | None = None, reason: str | None = None
+    queue: QueueStore,
+    event: str,
+    *,
+    job: Job | None = None,
+    reason: str | None = None,
+    stage: str | None = None,
+    error: BaseException | None = None,
+    status: int | None = None,
+    code: str | None = None,
 ) -> None:
-    if event not in EVENTS:
+    if type(event) is not str or event not in EVENTS:
         return
     detail = ""
     if job is not None:
@@ -78,8 +254,19 @@ def record_event(
         )
         device = job.device if job.device in {"cpu", "cuda", "auto"} else "—"
         detail = f" · задача {identifier} · Whisper {model} · {device}"
-    if reason is not None and reason in REASONS:
+    if type(reason) is str and reason in REASONS:
         detail += f" · {REASONS[reason]}"
+    if type(stage) is str and stage in STAGES:
+        detail += f" · этап {STAGES[stage]}"
+    if type(code) is str and code in CODES:
+        detail += f" · {CODES[code]}"
+    if type(status) is not int or not 100 <= status <= 599:
+        status = None
+    if error is not None:
+        error_detail, status = _error_details(error, status)
+        detail += error_detail
+    if type(status) is int and 100 <= status <= 599:
+        detail += f" · HTTP {status}"
     try:
         with queue._connect() as db:
             _table(db)

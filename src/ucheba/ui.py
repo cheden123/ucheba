@@ -61,11 +61,11 @@ from PySide6.QtWidgets import (
 from .app_version import current_version
 from . import updates
 from .analysis import OpenRouterError, check_openrouter_key
-from .diagnostics import classify_failure, export_log, record_event
+from .diagnostics import classify_failure, export_log, record_event, stage_label
 from .documents import timestamp
 from .imports import IMPORTS, MEDIA, load_transcript
 from .models import Analysis, Assignment, Segment
-from .pipeline import partial_result, process
+from .pipeline import NoSpeechError, partial_result, process
 from .queue import Job, QueueStore
 from .slides import SlideError
 from .speakers import save_review
@@ -112,15 +112,28 @@ class ProcessingThread(QThread):
         def cancelled() -> bool:
             return self.stop_requested.is_set() or queue.get(job.id).status == "cancelled"
 
+        stage = "prepare"
+        recorded_stages: set[str] = set()
+
+        def mark_stage(value: str) -> None:
+            nonlocal stage
+            stage = value
+            if value not in recorded_stages:
+                record_event(queue, "stage_start", job=job, stage=value)
+                recorded_stages.add(value)
+
         record_event(queue, "job_start", job=job)
         key = None
         try:
             if job.cloud:
+                mark_stage("read_key")
                 try:
                     key = WinVaultKeyring().get_password(KEY_SERVICE, KEY_ACCOUNT)
-                except (KeyringError, OSError):
-                    pass
-            result = process(job, key=key, progress=self.progress.emit, cancelled=cancelled)
+                except (KeyringError, OSError) as exc:
+                    record_event(queue, "stage_failed", job=job, stage=stage, error=exc)
+            result = process(
+                job, key=key, progress=self.progress.emit, cancelled=cancelled, stage=mark_stage
+            )
             queue.finish(job.id, "succeeded", result=result)
             record_event(queue, "job_succeeded", job=job)
             if job.auto_speakers or job.speaker_model is not None:
@@ -137,19 +150,30 @@ class ProcessingThread(QThread):
             elif not cancelled():
                 # Диагностика провайдера может содержать ключ или фрагменты лекции.
                 if type(exc) is ValueError or isinstance(
-                    exc, (OpenRouterError, SlideError, TranscriptionError)
+                    exc, (NoSpeechError, OpenRouterError, SlideError, TranscriptionError)
                 ):
                     message = str(exc)
                 elif isinstance(exc, FileNotFoundError):
                     message = "Исходный файл недоступен. Проверьте путь и подключение к папке."
                 else:
-                    message = "Обработка завершилась ошибкой. Проверьте файл и папку результатов."
+                    message = (
+                        f"Не удалось завершить этап «{stage_label(stage)}». "
+                        "Подробности доступны в журнале TXT."
+                    )
                 if key:
                     message = message.replace(key, "[скрыто]")
                 queue.finish(job.id, "failed", message=message, result=partial_result(job))
-                record_event(queue, "job_failed", job=job, reason=classify_failure(exc))
+                record_event(
+                    queue,
+                    "job_failed",
+                    job=job,
+                    reason=classify_failure(exc),
+                    stage=stage,
+                    error=exc,
+                    code="no_speech" if isinstance(exc, NoSpeechError) else None,
+                )
             else:
-                record_event(queue, "job_cancelled", job=job)
+                record_event(queue, "job_cancelled", job=job, stage=stage)
 
 
 class DirectoryScan(Thread):
@@ -187,14 +211,17 @@ class UpdateThread(QThread):
         self.action = action
         self.response: Update | updates.VerifiedInstaller | Path | None = None
         self.error = ""
+        self.failure: Exception | None = None
 
     def run(self) -> None:
         try:
             self.response = self.action()
         except UpdateError as exc:
             self.error = str(exc)
-        except Exception:
+            self.failure = exc
+        except Exception as exc:
             self.error = "Не удалось получить обновление. Проверьте доступ к папке и Интернету."
+            self.failure = exc
 
 
 def installed_copy() -> bool:
@@ -231,14 +258,14 @@ class KeyCheckThread(QThread):
             message = check_openrouter_key(key)
         except (OpenRouterError, ValueError) as exc:
             message = str(exc).replace(key, "[скрыто]") if key else str(exc)
-            record_event(self.queue, "key_check_failed")
-        except Exception:
+            record_event(self.queue, "key_check_failed", stage="openrouter_key", error=exc)
+        except Exception as exc:
             message = "Не удалось проверить ключ OpenRouter."
-            record_event(self.queue, "key_check_failed")
+            record_event(self.queue, "key_check_failed", stage="openrouter_key", error=exc)
         else:
             if key:
                 message = message.replace(key, "[скрыто]")
-            record_event(self.queue, "key_check_ok")
+            record_event(self.queue, "key_check_ok", stage="openrouter_key")
         self.status.emit(message)
 
 
@@ -275,6 +302,7 @@ class UpdateDialog(QDialog):
         self.available_update: Update | None = None
         self.installer: updates.VerifiedInstaller | None = None
         self.worker: UpdateThread | None = None
+        self.request_stage = "update_check"
         self.install_confirmed = False
         self.online_install_pending = False
         self.resume_queue_on_failure = False
@@ -335,10 +363,15 @@ class UpdateDialog(QDialog):
         self.update_buttons()
 
     def start_request(
-        self, action: Callable[[], Update | updates.VerifiedInstaller | Path | None], message: str
+        self,
+        action: Callable[[], Update | updates.VerifiedInstaller | Path | None],
+        message: str,
+        *,
+        stage: str = "update_check",
     ) -> None:
         worker = UpdateThread(self, action)
         self.worker = worker
+        self.request_stage = stage
         worker.finished.connect(self.request_finished)
         worker.finished.connect(worker.deleteLater)
         self.status.setText(message)
@@ -351,32 +384,41 @@ class UpdateDialog(QDialog):
             return
         self.worker = None
         result = worker.response
+        stage = self.request_stage
         if self.install_confirmed:
             self.install_confirmed = False
             if isinstance(result, Path) and not worker.error and self.launch_installer(result):
                 return
             if worker.error:
+                record_event(
+                    self.main_window.queue,
+                    "update_launch_failed",
+                    stage=stage,
+                    error=worker.failure,
+                )
                 self.installer = None
                 self.status.setText(worker.error)
             self.restore_queue()
         elif worker.error:
-            record_event(self.main_window.queue, "update_check_failed")
+            event = "update_check_failed" if stage == "update_check" else "update_download_failed"
+            record_event(self.main_window.queue, event, stage=stage, error=worker.failure)
             self.online_install_pending = False
             self.status.setText(worker.error)
         elif isinstance(result, Update):
-            record_event(self.main_window.queue, "update_check_ok")
+            record_event(self.main_window.queue, "update_check_ok", stage=stage)
             self.available_update = result
             self.notes.setPlainText(result.notes)
             if self.online_install_pending:
                 self.start_request(
                     lambda: updates.stage_online_update(result, self.private_update_dir()),
                     f"Загрузка и проверка установщика версии {result.version}…",
+                    stage="update_download",
                 )
                 return
             size = f"{result.installer_size / 1024**2:.1f}".replace(".", ",")
             self.status.setText(f"Доступна версия {result.version}. Размер установщика {size} МБ.")
         elif isinstance(result, updates.VerifiedInstaller):
-            record_event(self.main_window.queue, "update_ready")
+            record_event(self.main_window.queue, "update_ready", stage=stage)
             self.installer = result
             signature = "проверена" if result.signed else "отсутствует"
             self.status.setText(
@@ -389,7 +431,7 @@ class UpdateDialog(QDialog):
                 return
         else:
             self.online_install_pending = False
-            record_event(self.main_window.queue, "update_check_ok")
+            record_event(self.main_window.queue, "update_check_ok", stage=stage)
             self.status.setText("Установлена актуальная версия.")
         self.update_buttons()
 
@@ -434,6 +476,7 @@ class UpdateDialog(QDialog):
                     Path(folder), self.private_update_dir(), self.current_version
                 ),
                 "Проверка локального установщика…",
+                stage="update_download",
             )
 
     def open_release(self) -> None:
@@ -458,6 +501,7 @@ class UpdateDialog(QDialog):
             self.start_request(
                 lambda: updates.verify_installer_for_launch(installer),
                 "Повторная проверка установщика…",
+                stage="update_launch",
             )
         else:
             self.restore_queue()
@@ -492,8 +536,9 @@ class UpdateDialog(QDialog):
         started, _pid = QProcess.startDetached(str(path), [], str(path.parent))
         if not started:
             self.status.setText("Не удалось запустить установщик.")
+            record_event(self.main_window.queue, "update_launch_failed", stage="update_launch")
             return False
-        record_event(self.main_window.queue, "update_launched")
+        record_event(self.main_window.queue, "update_launched", stage="update_launch")
         self.resume_queue_on_failure = False
         self.accept()
         self.main_window.close()

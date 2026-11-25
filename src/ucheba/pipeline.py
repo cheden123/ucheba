@@ -23,6 +23,10 @@ if TYPE_CHECKING:
     from .slides import Slide
 
 
+class NoSpeechError(ValueError):
+    """The recognizer returned no usable speech segments."""
+
+
 def _cache(job: Job) -> Path:
     if job.state_dir is not None:
         return job.state_dir / job.id
@@ -91,7 +95,10 @@ def process(
     key: str | None,
     progress: Callable[[str], None],
     cancelled: Callable[[], bool],
+    *,
+    stage: Callable[[str], None] = lambda _stage: None,
 ) -> Path:
+    stage("prepare")
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", job.source.stem)[:60].rstrip(" .")
     folder = job.output / f"{datetime.now():%Y-%m-%d}_{name}_{job.id}"
     previous = next(job.output.glob(f"*_{job.id}"), None)
@@ -119,6 +126,7 @@ def process(
             "Папка результатов недоступна для записи. Проверьте путь и права доступа."
         ) from exc
     if partial is not None:
+        stage("read_transcript")
         progress("Чтение сохранённой расшифровки")
         transcript = partial / "transcript.json"
         metadata = json.loads((partial / "metadata.json").read_text(encoding="utf-8"))
@@ -131,6 +139,7 @@ def process(
             raise ValueError("Сохранённая расшифровка изменилась. Добавьте её как новое задание.")
         segments = TypeAdapter(list[Segment]).validate_json(raw)
     elif extension in IMPORTS:
+        stage("read_transcript")
         progress("Чтение расшифровки")
         segments = load_transcript(job.source)
     elif extension in MEDIA:
@@ -159,6 +168,7 @@ def process(
                 device=selected_device,
                 progress=progress,
                 cancelled=cancelled,
+                stage=stage,
             )
         except TranscriptionError as exc:
             if selected_device != "auto" or not isinstance(exc.__cause__, (RuntimeError, OSError)):
@@ -171,14 +181,16 @@ def process(
                 device="cpu",
                 progress=progress,
                 cancelled=cancelled,
+                stage=stage,
             )
     if not segments:
-        raise ValueError("В записи не обнаружена речь")
+        raise NoSpeechError("В записи не обнаружена речь.")
     if cancelled():
         raise InterruptedError("Обработка отменена")
     candidate = None
     speaker_warning = None
     if (job.speaker_model is not None or job.auto_speakers) and extension in MEDIA:
+        stage("speakers")
         from .diarization import diarize, suggest_lecturer
 
         if partial is None or not any(segment.speaker for segment in segments):
@@ -212,13 +224,16 @@ def process(
             candidate = suggest_lecturer(segments)
 
     if has_optional_steps and partial is None:
+        stage("save_transcript")
         progress("Сохранение расшифровки")
         _publish(_cache(job) / "Расшифровка", job, segments, None, cancelled, candidate=candidate)
     if job.cloud and not key:
+        stage("read_key")
         raise ValueError("Добавьте ключ OpenRouter в настройках для облачного анализа")
     with TemporaryDirectory(prefix="ucheba-slides-") as work:
         slides = []
         if job.slides and extension in VIDEO:
+            stage("slides")
             from .slides import extract_slides
 
             executable = shutil.which("tesseract")
@@ -239,6 +254,7 @@ def process(
             )
         analysis = None
         if job.cloud and key:
+            stage("analyze")
             from .analysis import analyze
 
             _check_source_consent(job)
@@ -251,6 +267,7 @@ def process(
                 cache_dir=_cache(job) / "analysis",
                 slides=[(slide.start, slide.text) for slide in slides if slide.text.strip()],
             )
+        stage("save")
         progress("Создание документов Word")
         _publish(folder, job, segments, analysis, cancelled, slides, candidate, speaker_warning)
     return folder

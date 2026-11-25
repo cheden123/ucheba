@@ -2,9 +2,13 @@
 
 Публикуемые EXE и ZIP динамически загружают библиотеки Qt из `_internal/PySide6`. Локальная сборка дополнительно содержит оригинальное колесо PyAV. Публичная сборка исключает PyAV, а также неиспользуемые Qt Virtual Keyboard и Qt PDF вместе с их плагинами и цепочкой зависимостей Qt Quick/QML, используемой только Qt Virtual Keyboard. Каталоги с уведомлениями и текстами лицензий расположены в `licenses` рядом с приложением.
 
+## Python и OpenSSL
+
+Windows-пакет включает DLL OpenSSL 3 из комплекта Python, которым собран пакет. Точные версии указаны в `licenses/Python-OpenSSL-versions.txt`. Лицензии приложены к пакету. [Исходный код CPython](https://github.com/python/cpython/tags) · [Исходный код и выпуски OpenSSL](https://github.com/openssl/openssl/releases) · [Лицензия OpenSSL 3](https://www.openssl-library.org/source/license/)
+
 ## Faster Whisper публичной сборки
 
-[Исходный код faster-whisper 1.2.1](https://github.com/SYSTRAN/faster-whisper/tree/v1.2.1) и [точечный патч упаковки](https://github.com/cheden123/ucheba/blob/v0.4.0/scripts/prepare-public-whisper.py). Патч загружает PyAV только при вызове встроенного декодирования файла. Учёба AI получает 16 кГц PCM через отдельно загружаемый FFmpeg и передаёт движку массив NumPy, а PyAV и связанные кодеки не входят в публичный пакет.
+[Исходный код faster-whisper 1.2.1](https://github.com/SYSTRAN/faster-whisper/tree/v1.2.1) и [точечный патч упаковки](https://github.com/cheden123/ucheba/blob/v0.4.2/scripts/prepare-public-whisper.py). Патч загружает PyAV только при вызове встроенного декодирования файла. Учёба AI получает 16 кГц PCM через отдельно загружаемый FFmpeg и передаёт движку массив NumPy, а PyAV и связанные кодеки не входят в публичный пакет.
 
 ## PyAV 19.0.2 и FFmpeg 9.0.2 в локальной сборке
 

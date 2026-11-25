@@ -64,6 +64,40 @@ def test_window_processes_transcript_and_displays_result(app, tmp_path: Path):
     window.close()
 
 
+def test_processing_thread_logs_stage_and_safe_cause(app, tmp_path: Path, monkeypatch):
+    from PySide6.QtWidgets import QWidget
+
+    from ucheba import ui
+    from ucheba.diagnostics import export_log
+    from ucheba.queue import QueueStore
+    from ucheba.transcription import TranscriptionError
+
+    database = tmp_path / "queue.sqlite3"
+    store = QueueStore(database)
+    store.add(tmp_path / "Скрытая лекция.wav", tmp_path, model="small", device="cpu", cloud=False)
+    job = store.claim_next()
+    assert job is not None
+
+    def fail(_job, _key=None, **kwargs):
+        kwargs["stage"]("load_whisper")
+        try:
+            raise ImportError("C:/private/token-and-content")
+        except ImportError as exc:
+            raise TranscriptionError("Не удалось загрузить библиотеку Whisper.") from exc
+
+    monkeypatch.setattr(ui, "process", fail)
+    parent = QWidget()
+    ui.ProcessingThread(database, job, parent).run()
+    assert store.get(job.id).status == "failed"
+    destination = tmp_path / "journal.txt"
+    export_log(store, destination)
+    log = destination.read_text(encoding="utf-8-sig")
+    assert "Загрузка модели Whisper" in log
+    assert "ucheba.transcription.TranscriptionError ← builtins.ImportError" in log
+    assert "C:/private" not in log
+    assert "Скрытая лекция" not in log
+
+
 def test_watched_folder_queues_only_stable_file_once(app, tmp_path: Path, monkeypatch):
     from PySide6.QtCore import QSettings
 
